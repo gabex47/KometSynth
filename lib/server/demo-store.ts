@@ -1,0 +1,87 @@
+import "server-only";
+
+import type { AccountRole } from "@/lib/types";
+
+export type AccountRecord = {
+  id: string;
+  username: string;
+  pinHash: string;
+  accountType: AccountRole;
+  createdAt: string;
+  createdBy: string | null;
+  lastLogin: string | null;
+  loginAttempts: number;
+  lockedUntil: string | null;
+  notes: string | null;
+  disabled: boolean;
+};
+
+export type SessionRecord = {
+  accountId: string;
+  expiresAt: number;
+  createdAt: number;
+};
+
+export type ActivityRecord = {
+  id: string;
+  user: string;
+  action: string;
+  ip: string;
+  timestamp: string;
+};
+
+export type ApiKeyRecord = {
+  id: string;
+  userId: string;
+  provider: string;
+  encryptedKey: string;
+  keyHint: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type DemoStore = {
+  accounts: Map<string, AccountRecord>;
+  sessions: Map<string, SessionRecord>;
+  logs: ActivityRecord[];
+  apiKeys: ApiKeyRecord[];
+};
+
+const OWNER_ID = "00000000-0000-4000-8000-000000000001";
+const OWNER_PIN_HASH = "$2b$12$7sdj1TqOWBnmVLxgzFd64OCc3X42TNfJvIgdAGqfq8dE9kflaXcOm";
+
+const globalForDemo = globalThis as unknown as { synthnetDemoStore?: DemoStore };
+
+function createStore(): DemoStore {
+  const owner: AccountRecord = {
+    id: OWNER_ID,
+    username: "lordsynth7000",
+    pinHash: OWNER_PIN_HASH,
+    accountType: "owner",
+    createdAt: new Date().toISOString(),
+    createdBy: null,
+    lastLogin: null,
+    loginAttempts: 0,
+    lockedUntil: null,
+    notes: "Initial owner account",
+    disabled: false,
+  };
+
+  return {
+    accounts: new Map([[owner.username, owner]]),
+    sessions: new Map(),
+    logs: [],
+    apiKeys: [],
+  };
+}
+
+export const demoStore = globalForDemo.synthnetDemoStore ?? createStore();
+globalForDemo.synthnetDemoStore = demoStore;
+
+export function isDemoMode() {
+  if (process.env.SYNTHNET_DEMO_MODE === "true") return true;
+  return (
+    process.env.NODE_ENV !== "production" &&
+    !(process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY)
+  );
+}
