@@ -1,44 +1,24 @@
 # SynthNet
 
-SynthNet is a private, black-and-white developer network with custom PIN authentication, role-aware administration, encrypted API-key storage, an AI sandbox, audit logging, and a registry-driven toolbox.
-
-## Run locally
+SynthNet is a private developer workspace with username/PIN authentication, role-aware administration, encrypted BYOK provider keys, append-only audit logging, and a registry-driven tool catalog.
 
 ```bash
-npm install
+npm ci
 npm run dev
 ```
 
-With no Supabase credentials, development uses an in-memory server-only store. Sign in with the seeded owner credentials from the project brief. The development store never runs in production.
+Production uses a server-only Supabase service-role client and deny-by-default RLS. Local development can use the explicitly enabled in-memory demo store. Never expose the service-role or encryption keys through a `NEXT_PUBLIC_` variable.
 
-## Production configuration
+The dashboard uses account-scoped database summaries, audit history uses indexed cursor pagination, provider keys support atomic revocation, and privileged account changes are authorized and audited inside PostgreSQL.
 
-1. Create a Supabase project and apply the files in `supabase/migrations` in filename order.
-2. Copy `.env.example` to `.env.local` and set `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`.
-3. Generate `API_KEY_ENCRYPTION_KEY` with `openssl rand -hex 32`.
-4. Keep `SYNTHNET_DEMO_MODE=false` in production.
-5. Deploy behind HTTPS and rotate the initial owner PIN after first access.
+See [SETUP.md](./SETUP.md) for the complete local setup, Supabase migrations, deployment, backup, and security guide.
 
-The service-role key and encryption key are server-only and must never use a `NEXT_PUBLIC_` prefix.
-
-## Security model
-
-- PINs use bcrypt cost 12 and are never returned to the browser.
-- Sessions use 256-bit opaque tokens; only SHA-256 token hashes are stored.
-- Cookies are HTTP-only, same-site strict, and secure in production.
-- Five failed PIN attempts lock the account for 15 minutes. A second IP/identity limiter protects the login route.
-- Provider keys use AES-256-GCM with a deployment-specific encryption key.
-- RLS is enabled on every Supabase table. Browser roles have no direct table grants because custom identities are authorized in protected server routes.
-- Audit records are append-only at the database layer.
-- Mutating routes enforce same-origin requests and validate payloads with Zod.
-
-## Commands
+## Verification
 
 ```bash
-npm run typecheck
-npm run lint
-npm run build
+npm run doctor
+npm run verify
 npm start
 ```
 
-New tools are registered in `lib/tools/catalog.ts`; the catalog, global search, dashboard counts, and category views update automatically.
+Pull requests and main-branch pushes run the same lint, typecheck, production build, and dependency-audit gates in GitHub Actions.

@@ -1,6 +1,7 @@
 import "server-only";
 
 import type { AccountRole } from "@/lib/types";
+import { getServerEnvironment, hasUsableSupabaseConfig } from "@/lib/server/env";
 
 export type AccountRecord = {
   id: string;
@@ -98,9 +99,9 @@ export const demoStore = globalForDemo.synthnetDemoStore ?? createStore();
 globalForDemo.synthnetDemoStore = demoStore;
 
 export function isDemoMode() {
-  if (process.env.SYNTHNET_DEMO_MODE === "true") return true;
+  if (getServerEnvironment().SYNTHNET_DEMO_MODE === "true") return true;
   return (
     process.env.NODE_ENV !== "production" &&
-    !(process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY)
+    !hasUsableSupabaseConfig()
   );
 }

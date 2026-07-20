@@ -3,6 +3,7 @@
 import { FormEvent, useRef, useState } from "react";
 import { ArrowLeft, ArrowRight, Check, KeyRound, LoaderCircle, ShieldCheck } from "lucide-react";
 import Link from "next/link";
+import { apiRequest } from "@/lib/client/api";
 
 type Step = "username" | "pin";
 
@@ -20,13 +21,10 @@ export function AuthScreen() {
     setError("");
     setLoading(true);
     try {
-      const response = await fetch("/api/auth/username", {
+      await apiRequest<{ accepted: boolean }>("/api/auth/username", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ username }),
       });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "Access denied.");
       setStep("pin");
       requestAnimationFrame(() => pinRef.current?.focus());
     } catch (caught) {
@@ -42,13 +40,10 @@ export function AuthScreen() {
     setError("");
     setLoading(true);
     try {
-      const response = await fetch("/api/auth/login", {
+      await apiRequest<{ authenticated: boolean }>("/api/auth/login", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ username, pin }),
       });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "Invalid credentials.");
       window.location.assign("/");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Invalid credentials.");
@@ -90,7 +85,7 @@ export function AuthScreen() {
                 id="username"
                 name="username"
                 value={username}
-                onChange={(event) => setUsername(event.target.value.toLowerCase())}
+                onChange={(event) => setUsername(event.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, ""))}
                 autoComplete="username"
                 autoCapitalize="none"
                 spellCheck={false}
@@ -110,7 +105,7 @@ export function AuthScreen() {
           <form onSubmit={submitPin} className="auth-form">
             <div className="identity-confirmed">
               <span><Check size={14} /></span>
-              <div><small>IDENTITY ACCEPTED</small><strong>{username}</strong></div>
+              <div><small>IDENTITY ENTERED</small><strong>{username}</strong></div>
             </div>
             <label htmlFor="pin">SECURITY PIN</label>
             <div className="terminal-field pin-field">
@@ -143,7 +138,7 @@ export function AuthScreen() {
 
       <footer className="auth-footer">
         <span>ENCRYPTED CONNECTION</span>
-        <span>TLS 1.3</span>
+        <span>HTTPS REQUIRED</span>
         <span>SESSION // PENDING</span>
       </footer>
     </main>

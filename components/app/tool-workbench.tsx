@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, Check, Clipboard, LoaderCircle, Play, RefreshCcw } from "lucide-react";
 import type { ToolDefinition } from "@/lib/types";
 
@@ -26,14 +26,18 @@ function safeCalculate(input: string) {
     const operator = operators.pop();
     const right = values.pop();
     const left = values.pop();
-    if (!operator || left === undefined || right === undefined) throw new Error("Invalid expression.");
+    if (!operator || !Object.hasOwn(precedence, operator) || left === undefined || right === undefined) throw new Error("Invalid expression.");
     if ((operator === "/" || operator === "%") && right === 0) throw new Error("Division by zero.");
     values.push(operator === "+" ? left + right : operator === "-" ? left - right : operator === "*" ? left * right : operator === "/" ? left / right : left % right);
   };
   tokens.forEach((token) => {
     if (!Number.isNaN(Number(token))) values.push(Number(token));
     else if (token === "(") operators.push(token);
-    else if (token === ")") { while (operators.at(-1) !== "(") apply(); operators.pop(); }
+    else if (token === ")") {
+      if (!operators.includes("(")) throw new Error("Invalid expression.");
+      while (operators.at(-1) !== "(") apply();
+      operators.pop();
+    }
     else { while (operators.length && operators.at(-1) !== "(" && precedence[operators.at(-1)!] >= precedence[token]) apply(); operators.push(token); }
   });
   while (operators.length) apply();
@@ -42,7 +46,7 @@ function safeCalculate(input: string) {
 }
 
 async function runTool(tool: ToolDefinition, input: string) {
-  const serverTools = ["md5-generator", "hmac-generator", "dns-lookup", "reverse-dns", "http-status", "mime-lookup", "user-agent"];
+  const serverTools = ["md5-generator", "dns-lookup", "reverse-dns", "http-status", "mime-lookup", "user-agent"];
   if (serverTools.includes(tool.id)) {
     const response = await fetch("/api/tools/process", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tool: tool.id, input }) });
     const data = await response.json();
@@ -52,13 +56,28 @@ async function runTool(tool: ToolDefinition, input: string) {
   switch (tool.id) {
     case "json-formatter": return JSON.stringify(JSON.parse(input), null, 2);
     case "yaml-converter": return jsonToYaml(JSON.parse(input));
-    case "base64": return input.startsWith("decode:") ? decodeURIComponent(escape(atob(input.slice(7).trim()))) : btoa(unescape(encodeURIComponent(input)));
+    case "base64": {
+      if (input.startsWith("decode:")) {
+        const decoded = Uint8Array.from(atob(input.slice(7).trim()), (character) => character.charCodeAt(0));
+        return new TextDecoder("utf-8", { fatal: true }).decode(decoded);
+      }
+      return btoa(String.fromCharCode(...new TextEncoder().encode(input)));
+    }
     case "url-codec": return input.startsWith("decode:") ? decodeURIComponent(input.slice(7).trim()) : encodeURIComponent(input);
     case "jwt-decoder": {
       const [header, payload] = input.split(".");
       if (!header || !payload) throw new Error("Enter a valid JWT structure.");
-      const decode = (part: string) => JSON.parse(atob(part.replace(/-/g, "+").replace(/_/g, "/")));
+      const decode = (part: string) => {
+        const normalized = part.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(part.length / 4) * 4, "=");
+        return JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(normalized), (character) => character.charCodeAt(0))));
+      };
       return JSON.stringify({ header: decode(header), payload: decode(payload), note: "Signature is not verified by this local inspector." }, null, 2);
+    }
+    case "hmac-generator": {
+      const [secret, ...message] = input.split("\n");
+      if (!secret || !message.length) throw new Error("Enter the secret on line one and the message on following lines.");
+      const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+      return bytesToHex(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(message.join("\n"))));
     }
     case "uuid-generator": return Array.from({ length: 5 }, () => crypto.randomUUID()).join("\n");
     case "nanoid-generator": return Array.from({ length: 5 }, () => [...crypto.getRandomValues(new Uint8Array(16))].map((n) => "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz-"[n & 63]).join("")).join("\n");
@@ -132,7 +151,17 @@ export function ToolWorkbench({ tool, onBack }: { tool: ToolDefinition; onBack: 
   const [error, setError] = useState("");
   const [running, setRunning] = useState(false);
   const [copied, setCopied] = useState(false);
+  const copyTimer = useRef<number | null>(null);
   const isGenerator = useMemo(() => ["uuid-generator", "nanoid-generator", "password-generator"].includes(tool.id), [tool.id]);
+
+  useEffect(() => {
+    setInput("");
+    setOutput("");
+    setError("");
+    return () => {
+      if (copyTimer.current) window.clearTimeout(copyTimer.current);
+    };
+  }, [tool.id]);
 
   async function execute() {
     setRunning(true);
@@ -150,7 +179,8 @@ export function ToolWorkbench({ tool, onBack }: { tool: ToolDefinition; onBack: 
   async function copyOutput() {
     await navigator.clipboard.writeText(output);
     setCopied(true);
-    window.setTimeout(() => setCopied(false), 1600);
+    if (copyTimer.current) window.clearTimeout(copyTimer.current);
+    copyTimer.current = window.setTimeout(() => setCopied(false), 1600);
   }
 
   return (
@@ -163,12 +193,12 @@ export function ToolWorkbench({ tool, onBack }: { tool: ToolDefinition; onBack: 
       <div className="workbench-grid">
         <div className="editor-panel">
           <div className="panel-title"><span>INPUT</span><button onClick={() => setInput("")}><RefreshCcw size={13} /> CLEAR</button></div>
-          <textarea value={input} onChange={(event) => setInput(event.target.value)} placeholder={placeholderFor(tool)} spellCheck={false} aria-label={`${tool.name} input`} />
+          <textarea value={input} maxLength={10_000} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) void execute(); }} placeholder={placeholderFor(tool)} spellCheck={false} aria-label={`${tool.name} input`} />
           <div className="editor-footer"><span>{input.length} CHARS</span><span>UTF-8</span></div>
         </div>
         <div className="editor-panel output-panel">
           <div className="panel-title"><span>OUTPUT</span><button onClick={copyOutput} disabled={!output}>{copied ? <Check size={13} /> : <Clipboard size={13} />} {copied ? "COPIED" : "COPY"}</button></div>
-          <pre className={!output ? "empty-output" : ""}>{output || "Output will appear here."}</pre>
+          <pre className={!output ? "empty-output" : ""} aria-live="polite">{output || "Output will appear here."}</pre>
           <div className="editor-footer"><span>{output.length} CHARS</span><span>{error ? "ERROR" : output ? "COMPLETE" : "WAITING"}</span></div>
         </div>
       </div>

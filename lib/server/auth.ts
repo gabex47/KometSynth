@@ -11,6 +11,7 @@ const SESSION_COOKIE = "synthnet_session";
 const SESSION_TTL_MS = 1000 * 60 * 60 * 12;
 const MAX_PIN_ATTEMPTS = 5;
 const LOCK_MS = 1000 * 60 * 15;
+const DUMMY_PIN_HASH = "$2b$12$.xcVjstjzYmrlmCRIR0KEOcPogvG0nKAKVD52ZxOrJSp12kBPS11S";
 
 type DatabaseAccount = {
   id: string;
@@ -24,6 +25,29 @@ type DatabaseAccount = {
   locked_until: string | null;
   notes: string | null;
   disabled: boolean;
+};
+
+type LoginAttemptResult = {
+  outcome: "success" | "invalid" | "locked" | "denied";
+  id: string | null;
+  username: string | null;
+  account_type: AccountRole | null;
+  created_at: string | null;
+  last_login: string | null;
+};
+
+type SessionResult = {
+  id: string;
+  username: string;
+  account_type: AccountRole;
+  created_at: string;
+  last_login: string | null;
+  disabled: boolean;
+};
+
+export type SessionContext = {
+  account: SessionAccount;
+  tokenHash: string;
 };
 
 function fromDatabase(account: DatabaseAccount): AccountRecord {
@@ -52,6 +76,17 @@ function safeAccount(account: AccountRecord): SafeAccount {
   };
 }
 
+function safeSessionAccount(account: SessionResult): SessionAccount {
+  return {
+    id: account.id,
+    username: account.username,
+    accountType: account.account_type,
+    createdAt: account.created_at,
+    lastLogin: account.last_login,
+    disabled: account.disabled,
+  };
+}
+
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
 }
@@ -62,7 +97,7 @@ export async function findAccount(username: string): Promise<AccountRecord | nul
 
   const { data, error } = await getSupabaseAdmin()
     .from("accounts")
-    .select("*")
+    .select("id, username, pin_hash, account_type, created_at, created_by, last_login, login_attempts, locked_until, notes, disabled")
     .eq("username", normalized)
     .maybeSingle();
 
@@ -70,21 +105,8 @@ export async function findAccount(username: string): Promise<AccountRecord | nul
   return data ? fromDatabase(data as DatabaseAccount) : null;
 }
 
-async function updateAccount(account: AccountRecord, patch: Partial<AccountRecord>) {
-  Object.assign(account, patch);
-  if (isDemoMode()) return;
-
-  const databasePatch: Record<string, unknown> = {};
-  if (patch.lastLogin !== undefined) databasePatch.last_login = patch.lastLogin;
-  if (patch.loginAttempts !== undefined) databasePatch.login_attempts = patch.loginAttempts;
-  if (patch.lockedUntil !== undefined) databasePatch.locked_until = patch.lockedUntil;
-  if (patch.disabled !== undefined) databasePatch.disabled = patch.disabled;
-  if (patch.pinHash !== undefined) databasePatch.pin_hash = patch.pinHash;
-  if (patch.accountType !== undefined) databasePatch.account_type = patch.accountType;
-  if (patch.notes !== undefined) databasePatch.notes = patch.notes;
-
-  const { error } = await getSupabaseAdmin().from("accounts").update(databasePatch).eq("id", account.id);
-  if (error) throw new Error("Unable to update account.");
+export async function consumeUnknownAccountPin(pin: string) {
+  await bcrypt.compare(pin, DUMMY_PIN_HASH);
 }
 
 export async function logActivity(user: string, action: string, ip: string) {
@@ -108,34 +130,74 @@ export async function logActivity(user: string, action: string, ip: string) {
     ip,
     timestamp: record.timestamp,
   });
-  if (error) console.error("Failed to write audit log", error.message);
+  if (error) console.error("Failed to write audit log.");
 }
 
-export async function authenticateWithPin(account: AccountRecord, pin: string, ip: string) {
+async function authenticateDemoAccount(account: AccountRecord, pin: string, ip: string) {
   if (account.disabled) {
+    await bcrypt.compare(pin, account.pinHash);
     await logActivity(account.username, "login_failed_disabled", ip);
     return { ok: false as const, reason: "denied" as const };
   }
 
   const now = Date.now();
   if (account.lockedUntil && Date.parse(account.lockedUntil) > now) {
+    await bcrypt.compare(pin, account.pinHash);
     await logActivity(account.username, "login_failed_locked", ip);
     return { ok: false as const, reason: "locked" as const };
   }
 
   const valid = await bcrypt.compare(pin, account.pinHash);
   if (!valid) {
-    const attempts = account.loginAttempts + 1;
+    const attempts = account.lockedUntil && Date.parse(account.lockedUntil) <= now
+      ? 1
+      : account.loginAttempts + 1;
     const lockedUntil = attempts >= MAX_PIN_ATTEMPTS ? new Date(now + LOCK_MS).toISOString() : null;
-    await updateAccount(account, { loginAttempts: attempts, lockedUntil });
+    Object.assign(account, { loginAttempts: attempts, lockedUntil });
     await logActivity(account.username, lockedUntil ? "account_locked" : "login_failed_pin", ip);
     return { ok: false as const, reason: lockedUntil ? ("locked" as const) : ("invalid" as const) };
   }
 
-  const lastLogin = new Date().toISOString();
-  await updateAccount(account, { loginAttempts: 0, lockedUntil: null, lastLogin });
-  await logActivity(account.username, "login_success", ip);
+  Object.assign(account, {
+    loginAttempts: 0,
+    lockedUntil: null,
+    lastLogin: new Date().toISOString(),
+  });
   return { ok: true as const, account: safeAccount(account) };
+}
+
+export async function authenticateWithPin(account: AccountRecord, pin: string, ip: string) {
+  if (isDemoMode()) return authenticateDemoAccount(account, pin, ip);
+
+  const valid = await bcrypt.compare(pin, account.pinHash);
+  const { data, error } = await getSupabaseAdmin().rpc("record_login_attempt", {
+    p_account_id: account.id,
+    p_valid: valid,
+    p_ip: ip,
+  });
+  if (error) throw new Error("Unable to record sign-in attempt.");
+
+  const result = (Array.isArray(data) ? data[0] : data) as LoginAttemptResult | null;
+  if (!result || result.outcome !== "success") {
+    return {
+      ok: false as const,
+      reason: result?.outcome === "locked" ? ("locked" as const) : result?.outcome === "invalid" ? ("invalid" as const) : ("denied" as const),
+    };
+  }
+  if (!result.id || !result.username || !result.account_type || !result.created_at) {
+    throw new Error("Authentication returned an invalid account.");
+  }
+
+  return {
+    ok: true as const,
+    account: {
+      id: result.id,
+      username: result.username,
+      accountType: result.account_type,
+      createdAt: result.created_at,
+      lastLogin: result.last_login,
+    },
+  };
 }
 
 export async function createSession(account: SafeAccount, ip: string, userAgent: string) {
@@ -149,13 +211,14 @@ export async function createSession(account: SafeAccount, ip: string, userAgent:
       expiresAt: expiresAt.getTime(),
       createdAt: Date.now(),
     });
+    await logActivity(account.username, "login_success", ip);
   } else {
-    const { error } = await getSupabaseAdmin().from("sessions").insert({
-      account_id: account.id,
-      token_hash: tokenHash,
-      expires_at: expiresAt.toISOString(),
-      ip,
-      user_agent: userAgent.slice(0, 512),
+    const { error } = await getSupabaseAdmin().rpc("create_session", {
+      p_account_id: account.id,
+      p_token_hash: tokenHash,
+      p_expires_at: expiresAt.toISOString(),
+      p_ip: ip,
+      p_user_agent: userAgent.slice(0, 512),
     });
     if (error) throw new Error("Unable to create session.");
   }
@@ -171,7 +234,7 @@ export async function createSession(account: SafeAccount, ip: string, userAgent:
   });
 }
 
-export async function getCurrentSession(): Promise<SessionAccount | null> {
+export async function getCurrentSessionContext(): Promise<SessionContext | null> {
   const cookieStore = await cookies();
   const token = cookieStore.get(SESSION_COOKIE)?.value;
   if (!token) return null;
@@ -185,42 +248,39 @@ export async function getCurrentSession(): Promise<SessionAccount | null> {
     }
     const account = [...demoStore.accounts.values()].find((item) => item.id === session.accountId);
     if (!account || account.disabled) return null;
-    return { ...safeAccount(account), disabled: account.disabled };
+    return { account: { ...safeAccount(account), disabled: account.disabled }, tokenHash };
   }
 
-  const { data, error } = await getSupabaseAdmin()
-    .from("sessions")
-    .select("account_id, expires_at, revoked_at")
-    .eq("token_hash", tokenHash)
-    .is("revoked_at", null)
-    .gt("expires_at", new Date().toISOString())
-    .maybeSingle();
-  if (error || !data) return null;
-
-  const { data: accountData, error: accountError } = await getSupabaseAdmin()
-    .from("accounts")
-    .select("*")
-    .eq("id", data.account_id)
-    .eq("disabled", false)
-    .maybeSingle();
-  if (accountError || !accountData) return null;
-
-  const account = fromDatabase(accountData as DatabaseAccount);
-  return { ...safeAccount(account), disabled: account.disabled };
+  const { data, error } = await getSupabaseAdmin().rpc("get_session_account", {
+    p_token_hash: tokenHash,
+  });
+  if (error) return null;
+  const result = (Array.isArray(data) ? data[0] : data) as SessionResult | null;
+  return result ? { account: safeSessionAccount(result), tokenHash } : null;
 }
 
-export async function revokeCurrentSession() {
+export async function getCurrentSession(): Promise<SessionAccount | null> {
+  return (await getCurrentSessionContext())?.account ?? null;
+}
+
+export async function revokeCurrentSession(ip: string) {
   const cookieStore = await cookies();
   const token = cookieStore.get(SESSION_COOKIE)?.value;
   if (token) {
     const tokenHash = hashToken(token);
     if (isDemoMode()) {
+      const session = demoStore.sessions.get(tokenHash);
+      const account = session
+        ? [...demoStore.accounts.values()].find((item) => item.id === session.accountId)
+        : null;
       demoStore.sessions.delete(tokenHash);
+      if (account) await logActivity(account.username, "logout", ip);
     } else {
-      await getSupabaseAdmin()
-        .from("sessions")
-        .update({ revoked_at: new Date().toISOString() })
-        .eq("token_hash", tokenHash);
+      const { error } = await getSupabaseAdmin().rpc("revoke_session", {
+        p_token_hash: tokenHash,
+        p_ip: ip,
+      });
+      if (error) console.error("Failed to revoke session.");
     }
   }
   cookieStore.delete(SESSION_COOKIE);

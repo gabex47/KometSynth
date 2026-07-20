@@ -1,21 +1,35 @@
-import { getCurrentSession } from "@/lib/server/auth";
-import { demoStore, isDemoMode } from "@/lib/server/demo-store";
+import { z } from "zod";
+import { getActivityPage } from "@/lib/server/activity";
+import { getCurrentSessionContext } from "@/lib/server/auth";
 import { apiError, apiOk } from "@/lib/server/http";
-import { getSupabaseAdmin } from "@/lib/server/supabase";
 
-export async function GET() {
-  const account = await getCurrentSession();
-  if (!account) return apiError("Authentication required.", 401);
+const cursorSchema = z.object({
+  timestamp: z.string().datetime({ offset: true }),
+  id: z.string().uuid(),
+}).strict();
+
+function decodeCursor(value: string | null) {
+  if (!value) return null;
+  if (value.length > 512) throw new Error("invalid cursor");
+  return cursorSchema.parse(JSON.parse(Buffer.from(value, "base64url").toString("utf8")));
+}
+
+function encodeCursor(value: { timestamp: string; id: string } | null) {
+  return value ? Buffer.from(JSON.stringify(value)).toString("base64url") : null;
+}
+
+export async function GET(request: Request) {
+  const context = await getCurrentSessionContext();
+  if (!context) return apiError("Authentication required.", 401);
+  let cursor;
   try {
-    if (isDemoMode()) {
-      const logs = (account.accountType === "normal" ? demoStore.logs.filter((log) => log.user === account.username) : demoStore.logs).slice(0, 100);
-      return apiOk({ logs });
-    }
-    let query = getSupabaseAdmin().from("activity_logs").select("id, user, action, ip, timestamp").order("timestamp", { ascending: false }).limit(100);
-    if (account.accountType === "normal") query = query.eq("user", account.username);
-    const { data, error } = await query;
-    if (error) throw error;
-    return apiOk({ logs: data ?? [] });
+    cursor = decodeCursor(new URL(request.url).searchParams.get("cursor"));
+  } catch {
+    return apiError("Invalid activity cursor.", 400);
+  }
+  try {
+    const page = await getActivityPage(context, cursor);
+    return apiOk({ logs: page.logs, nextCursor: encodeCursor(page.nextCursor) });
   } catch {
     return apiError("Unable to load activity logs.", 500);
   }

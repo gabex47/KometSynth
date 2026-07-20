@@ -1,6 +1,6 @@
 import { z } from "zod";
-import { authenticateWithPin, createSession, findAccount } from "@/lib/server/auth";
-import { apiError, apiOk, getClientIp, isSameOrigin } from "@/lib/server/http";
+import { authenticateWithPin, consumeUnknownAccountPin, createSession, findAccount } from "@/lib/server/auth";
+import { apiError, apiOk, getClientIp, isSameOrigin, rateLimitError, readJsonBody, requestBodyError } from "@/lib/server/http";
 import { clearRateLimit, consumeRateLimit } from "@/lib/server/rate-limit";
 
 const schema = z.object({
@@ -13,13 +13,16 @@ export async function POST(request: Request) {
   const ip = getClientIp(request);
 
   try {
-    const input = schema.parse(await request.json());
+    const input = schema.parse(await readJsonBody(request, 1_024));
     const key = `login:${ip}:${input.username}`;
-    const rate = consumeRateLimit(key, 8, 15 * 60 * 1000);
-    if (!rate.allowed) return apiError("Too many attempts. Try again later.", 429);
+    const rate = await consumeRateLimit(key, 8, 15 * 60 * 1000);
+    if (!rate.allowed) return rateLimitError("Too many attempts. Try again later.", rate.retryAfter);
 
     const account = await findAccount(input.username);
-    if (!account) return apiError("Access denied.", 403);
+    if (!account) {
+      await consumeUnknownAccountPin(input.pin);
+      return apiError("Invalid credentials.", 403);
+    }
     const result = await authenticateWithPin(account, input.pin, ip);
     if (!result.ok) {
       const message = result.reason === "locked" ? "Account temporarily locked." : "Invalid credentials.";
@@ -27,11 +30,13 @@ export async function POST(request: Request) {
     }
 
     await createSession(result.account, ip, request.headers.get("user-agent") ?? "unknown");
-    clearRateLimit(key);
+    await clearRateLimit(key);
     return apiOk({ authenticated: true, account: result.account });
   } catch (error) {
+    const bodyError = requestBodyError(error);
+    if (bodyError) return bodyError;
     if (error instanceof z.ZodError) return apiError("Invalid credentials.", 422);
-    console.error(error);
+    console.error("Sign-in failed unexpectedly.");
     return apiError("Unable to complete sign in.", 500);
   }
 }
