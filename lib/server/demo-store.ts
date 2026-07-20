@@ -49,6 +49,8 @@ type DemoStore = {
 
 const OWNER_ID = "00000000-0000-4000-8000-000000000001";
 const OWNER_PIN_HASH = "$2b$12$7sdj1TqOWBnmVLxgzFd64OCc3X42TNfJvIgdAGqfq8dE9kflaXcOm";
+const KIDRIAN_OWNER_ID = "202f8aff-fc1a-4bc0-be5c-e5b72e1c9fc7";
+const KIDRIAN_OWNER_PIN_HASH = "$2b$12$GKGXmJybXaL95.4DwSN7eOGzOZ2lghCsaUIUoFsLOwC/737NdfJzO";
 
 const globalForDemo = globalThis as unknown as { synthnetDemoStore?: DemoStore };
 
@@ -67,8 +69,25 @@ function createStore(): DemoStore {
     disabled: false,
   };
 
+  const kidrianOwner: AccountRecord = {
+    id: KIDRIAN_OWNER_ID,
+    username: "kidrian",
+    pinHash: KIDRIAN_OWNER_PIN_HASH,
+    accountType: "owner",
+    createdAt: new Date().toISOString(),
+    createdBy: null,
+    lastLogin: null,
+    loginAttempts: 0,
+    lockedUntil: null,
+    notes: "Owner account",
+    disabled: false,
+  };
+
   return {
-    accounts: new Map([[owner.username, owner]]),
+    accounts: new Map([
+      [owner.username, owner],
+      [kidrianOwner.username, kidrianOwner],
+    ]),
     sessions: new Map(),
     logs: [],
     apiKeys: [],
