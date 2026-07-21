@@ -18,7 +18,7 @@ export type ManagedAccount = {
   notes: string | null;
 };
 
-type AccountAction = "lock" | "unlock" | "disable" | "enable" | "reset_pin" | "set_role";
+type AccountAction = "lock" | "unlock" | "disable" | "enable" | "reset_pin" | "set_role" | "force_logout" | "delete";
 
 function toSafe(account: AccountRecord): ManagedAccount {
   return {
@@ -68,8 +68,9 @@ export async function createManagedAccount(
       throw conflict;
     }
     const now = new Date().toISOString();
+    const id = randomUUID();
     demoStore.accounts.set(input.username, {
-      id: randomUUID(),
+      id,
       username: input.username,
       pinHash,
       accountType: input.accountType,
@@ -81,6 +82,7 @@ export async function createManagedAccount(
       notes: input.notes || null,
       disabled: false,
     });
+    demoStore.profiles.set(id, { displayName: "", bio: "", theme: "dark" });
     demoStore.logs.unshift({
       id: randomUUID(),
       user: context.account.username,
@@ -126,11 +128,11 @@ export async function updateManagedAccount(
     if (input.action === "set_role" && input.accountType === "owner" && context.account.accountType !== "owner") {
       throw new Error("Only owners can grant owner access.");
     }
-    if (input.accountId === context.account.id && ["lock", "disable"].includes(input.action)) {
+    if (input.accountId === context.account.id && ["lock", "disable", "force_logout", "delete"].includes(input.action)) {
       throw new Error("You cannot revoke your current account.");
     }
     const removesOwner = target.accountType === "owner" && (
-      ["lock", "disable"].includes(input.action)
+      ["lock", "disable", "delete"].includes(input.action)
       || (input.action === "set_role" && input.accountType !== "owner")
     );
     if (removesOwner) {
@@ -142,6 +144,22 @@ export async function updateManagedAccount(
       ));
       if (!anotherOwner) throw new Error("At least one active owner is required.");
     }
+    if (input.action === "delete") {
+      demoStore.accounts.delete(target.username);
+      demoStore.profiles.delete(target.id);
+      demoStore.apiKeys = demoStore.apiKeys.filter((key) => key.userId !== target.id);
+      for (const [token, session] of demoStore.sessions) {
+        if (session.accountId === target.id) demoStore.sessions.delete(token);
+      }
+      demoStore.logs.unshift({
+        id: randomUUID(),
+        user: context.account.username,
+        action: `account_deleted_${target.username}`,
+        ip,
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
     if (input.action === "lock") target.lockedUntil = new Date(Date.now() + 86_400_000).toISOString();
     if (input.action === "unlock") {
       target.lockedUntil = null;
@@ -151,7 +169,7 @@ export async function updateManagedAccount(
     if (input.action === "enable") target.disabled = false;
     if (input.action === "reset_pin" && pinHash) target.pinHash = pinHash;
     if (input.action === "set_role" && input.accountType) target.accountType = input.accountType;
-    if (["lock", "disable", "reset_pin", "set_role"].includes(input.action)) {
+    if (["lock", "disable", "reset_pin", "set_role", "force_logout"].includes(input.action)) {
       for (const [token, session] of demoStore.sessions) {
         if (session.accountId === target.id) demoStore.sessions.delete(token);
       }

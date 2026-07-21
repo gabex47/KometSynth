@@ -27,6 +27,7 @@ import {
 import type { SessionAccount, ToolCategory, ToolDefinition } from "@/lib/types";
 import { apiRequest } from "@/lib/client/api";
 import { toolCategories, tools } from "@/lib/tools/catalog";
+import { ThemeToggle } from "./theme-toggle";
 
 type View = "dashboard" | "ai" | ToolCategory | "api-keys" | "settings" | "logs" | "admin" | "owner";
 
@@ -65,6 +66,7 @@ const AISandbox = dynamic(() => import("./views/ai-sandbox").then((module) => mo
 const ApiKeysView = dynamic(() => import("./views/api-keys-view").then((module) => module.ApiKeysView), { loading: LoadingView });
 const LogsView = dynamic(() => import("./views/logs-view").then((module) => module.LogsView), { loading: LoadingView });
 const AdminView = dynamic(() => import("./views/admin-view").then((module) => module.AdminView), { loading: LoadingView });
+const SettingsView = dynamic(() => import("./views/settings-view").then((module) => module.SettingsView), { loading: LoadingView });
 
 function displayRole(role: SessionAccount["accountType"]) {
   return role === "owner" ? "OWNER" : role.toUpperCase();
@@ -140,10 +142,6 @@ function CatalogView({ category, onOpen }: { category: ToolCategory; onOpen: (to
   </>;
 }
 
-function SettingsView({ account }: { account: SessionAccount }) {
-  return <><div className="page-heading compact-heading"><div><span className="eyebrow">ACCOUNT / PREFERENCES</span><h1>Settings.</h1><p>Review your identity and session security.</p></div></div><div className="settings-grid"><section className="content-card profile-card"><div className="profile-avatar">{account.username.slice(0, 2).toUpperCase()}</div><div><small>IDENTITY</small><h2>{account.username}</h2><span className="role-badge">{displayRole(account.accountType)}</span></div></section><section className="content-card"><div className="section-title"><div><span className="eyebrow">SECURITY</span><h2>Current session</h2></div></div><div className="session-info"><p><span>Authenticated</span><strong>Current browser</strong></p><p><span>Session policy</span><strong>12 hours · HTTP only</strong></p><p><span>Last login</span><strong>{account.lastLogin ? new Date(account.lastLogin).toLocaleString() : "First session"}</strong></p></div></section></div></>;
-}
-
 function GlobalSearch({ open, onClose, onSelect }: { open: boolean; onClose: () => void; onSelect: (tool: ToolDefinition) => void }) {
   const [query, setQuery] = useState("");
   const [activeIndex, setActiveIndex] = useState(0);
@@ -199,7 +197,7 @@ export function SynthApp({ account }: { account: SessionAccount }) {
     </aside>
     {mobileOpen && <button className="sidebar-backdrop" aria-label="Close navigation" onClick={() => setMobileOpen(false)} />}
     <div className="app-main">
-      <header className="topbar"><button className="menu-button" aria-label="Open navigation" aria-controls="primary-sidebar" aria-expanded={mobileOpen} onClick={() => setMobileOpen(true)}><Menu size={19} /></button><div className="breadcrumb"><span>SYNTHNET</span><i>/</i><strong>{selectedTool?.name ?? (view === "ai" ? "AI SANDBOX" : view.replace("-", " ").toUpperCase())}</strong></div><div className="topbar-actions"><button className="search-button" onClick={() => setSearchOpen(true)}><Search size={15} /><span>Search tools…</span><kbd>⌘ K</kbd></button><span className="role-badge">{displayRole(account.accountType)}</span><button className="user-button" onClick={() => navigate("settings")}><CircleUserRound size={18} /><span>{account.username}</span></button></div></header>
+      <header className="topbar"><button className="menu-button" aria-label="Open navigation" aria-controls="primary-sidebar" aria-expanded={mobileOpen} onClick={() => setMobileOpen(true)}><Menu size={19} /></button><div className="breadcrumb"><span>SYNTHNET</span><i>/</i><strong>{selectedTool?.name ?? (view === "ai" ? "AI SANDBOX" : view.replace("-", " ").toUpperCase())}</strong></div><div className="topbar-actions"><button className="search-button" onClick={() => setSearchOpen(true)}><Search size={15} /><span>Search tools…</span><kbd>⌘ K</kbd></button><ThemeToggle /><span className="role-badge">{displayRole(account.accountType)}</span><button className="user-button" onClick={() => navigate("settings")}><CircleUserRound size={18} /><span>{account.username}</span></button></div></header>
       <main className="app-content">
         {selectedTool ? <ToolWorkbench tool={selectedTool} onBack={() => setSelectedTool(null)} /> : view === "dashboard" ? <DashboardView account={account} openView={navigate} openTool={openTool} /> : view === "ai" ? <AISandbox /> : ["developer", "network", "security", "utilities"].includes(view) ? <CatalogView category={view as ToolCategory} onOpen={openTool} /> : view === "api-keys" ? <ApiKeysView /> : view === "logs" ? <LogsView /> : view === "admin" && canAdmin ? <AdminView currentAccountId={account.id} /> : view === "owner" && isOwner ? <AdminView owner currentAccountId={account.id} /> : <SettingsView account={account} />}
       </main>

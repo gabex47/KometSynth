@@ -22,10 +22,10 @@ app/
   page.tsx              Server-rendered session gate
 components/
   app/                  Authenticated shell and lazy-loaded views
-  auth/                 Two-step username/PIN screen
+  auth/                 Login and invitation registration screens
 lib/
-  client/               Browser request helper
-  server/               Auth, Supabase, encryption, limits, and validation
+  client/               Browser request and theme helpers
+  server/               Auth, profiles, registration, encryption, and limits
   tools/                Registry-driven tool catalog
 scripts/                Secret-safe environment diagnostics
 supabase/migrations/    Ordered, immutable database migrations
@@ -114,12 +114,12 @@ npx supabase migration list
 
 For a brand-new database, the migrations create:
 
-- `accounts`, `sessions`, `activity_logs`, `api_keys`, `website_settings`, and `feature_flags`
+- `accounts`, `account_profiles`, `registration_invites`, `sessions`, `activity_logs`, `api_keys`, `website_settings`, and `feature_flags`
 - the `account_type` enum
 - primary, foreign-key, partial, composite, and cleanup indexes
 - append-only audit enforcement
 - deny-by-default RLS and revoked browser-role grants
-- service-role-only session, lockout, account-management, API-key, cleanup, and rate-limit functions
+- service-role-only registration, profile, session, lockout, account-management, API-key, cleanup, and rate-limit functions
 - account-scoped dashboard summaries, keyset-paginated audit reads, and atomic API-key deletion
 - a non-exposed `private.rate_limits` table
 - bootstrap owner records stored with bcrypt hashes, never plaintext PINs
@@ -144,8 +144,23 @@ SynthNet does not require email and does not use Supabase Auth for end-user logi
 - Session cookies are HTTP-only, `SameSite=Strict`, secure in production, and expire after 12 hours.
 - Locking, disabling, resetting a PIN, or changing a role revokes relevant sessions.
 - The database prevents removal of the last active owner.
+- Public registration is disabled. A normal or admin invitation is required, and only owners can issue admin invitations.
+- Invitation codes are generated with high entropy, shown once, stored only as SHA-256 hashes, usage-limited, expiring, revocable, and consumed under a row lock.
 
 Rotate every bootstrap PIN after initial deployment. Create named administrator accounts for operators instead of sharing an owner identity.
+
+### Register an account
+
+1. Sign in as an administrator and open **Admin → Invitations**.
+2. Choose the account role, expiry, and maximum uses. Admin invitations require an owner.
+3. Create the invitation and copy the one-time code before leaving the panel.
+4. On the login screen choose **Register**, enter a username, 6–12 digit PIN, and the invitation code.
+
+Registration signs the new account in immediately. No email address is collected or synthesized. Owner accounts cannot be created through an invitation; owner promotion remains an explicit owner-only action.
+
+### Account self-service
+
+The Settings view lets each signed-in account edit its display name, bio, and dark/light/system theme; rotate its PIN after confirming the current PIN; inspect active sessions; revoke an individual session; or sign out every other device. Sensitive changes are enforced in PostgreSQL and recorded in the append-only activity log.
 
 ## Storage setup
 
@@ -190,6 +205,7 @@ Run the explicit quality gates and build:
 ```bash
 npm run typecheck
 npm run lint
+npm run security
 npm run build
 npm start
 ```
@@ -237,7 +253,9 @@ Do not deploy the repository's local `.env` file or `.next` directory. Generate 
 - [ ] RLS remains enabled and browser grants remain revoked.
 - [ ] New functions revoke default `PUBLIC` execute and explicitly grant only required roles.
 - [ ] Supabase security and performance advisors have been reviewed.
-- [ ] Dependency audit, typecheck, lint, build, and smoke tests pass.
+- [ ] Dependency audit, security guardrails, typecheck, lint, build, and smoke tests pass.
+- [ ] Invitation expiry, revocation, role restrictions, and one-time code handling have been tested.
+- [ ] Account session and PIN-rotation controls have been tested.
 - [ ] CSP contains a per-request nonce and no production `unsafe-inline` script allowance.
 - [ ] HTTPS, HSTS, secure cookies, and no-store responses are verified at the public endpoint.
 - [ ] Rate-limit retention cleanup is scheduled by calling `cleanup_expired_sessions()` from a trusted job.
@@ -279,10 +297,11 @@ If the checkout is inside a synced Desktop/Documents folder or another file-prov
 npm ci                         # Reproducible dependency install
 npm run doctor                 # Validate local runtime and environment safely
 npm run dev                    # Development server
+npm run security               # Static secret, duplicate, RLS, and ACL guardrails
 npm run typecheck              # Strict TypeScript validation
 npm run lint                   # Scoped ESLint and accessibility rules
 npm run build                  # Optimized production build
-npm run verify                 # Lint, typecheck, and production build
+npm run verify                 # Security, lint, typecheck, and production build
 npm start                      # Start a completed production build
 npm audit                      # Dependency vulnerability report
 npx supabase migration list    # Compare local and remote migrations
@@ -292,10 +311,9 @@ npx supabase db lint           # Database lint checks
 
 ## Recommended future improvements
 
-1. Add CI that runs `npm ci`, audit, lint, build, migration drift checks, and browser smoke tests.
-2. Add a staging Supabase project and migration promotion workflow.
-3. Move operator provisioning out of seed data and into a one-time audited bootstrap command.
-4. Add key rotation with multiple decryption keys and background re-encryption.
-5. Add pagination and export workflows when audit volume exceeds the current 100-row UI window.
-6. Add integration tests for concurrent lockout attempts, last-owner protection, session revocation, and rate-limit windows.
-7. Add private Storage only when a concrete file workflow requires it.
+1. Add a staging Supabase project and an automated migration-drift promotion gate.
+2. Move operator provisioning out of seed data and into a one-time audited bootstrap command.
+3. Add key rotation with multiple decryption keys and background re-encryption.
+4. Add pagination and export workflows when audit volume exceeds the current 100-row UI window.
+5. Add browser integration tests for concurrent lockout, invitation consumption, last-owner protection, session revocation, and rate-limit windows.
+6. Add private Storage only when a concrete file workflow requires it.

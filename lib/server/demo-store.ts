@@ -18,9 +18,31 @@ export type AccountRecord = {
 };
 
 export type SessionRecord = {
+  id: string;
   accountId: string;
   expiresAt: number;
   createdAt: number;
+  ip: string;
+  userAgent: string;
+};
+
+export type ProfileRecord = {
+  displayName: string;
+  bio: string;
+  theme: "dark" | "light" | "system";
+};
+
+export type InviteRecord = {
+  id: string;
+  codeHash: string;
+  label: string;
+  accountType: Exclude<AccountRole, "owner">;
+  maxUses: number;
+  useCount: number;
+  expiresAt: string;
+  disabled: boolean;
+  createdAt: string;
+  lastUsedAt: string | null;
 };
 
 export type ActivityRecord = {
@@ -46,6 +68,8 @@ type DemoStore = {
   sessions: Map<string, SessionRecord>;
   logs: ActivityRecord[];
   apiKeys: ApiKeyRecord[];
+  profiles: Map<string, ProfileRecord>;
+  invites: InviteRecord[];
 };
 
 const OWNER_ID = "00000000-0000-4000-8000-000000000001";
@@ -92,11 +116,27 @@ function createStore(): DemoStore {
     sessions: new Map(),
     logs: [],
     apiKeys: [],
+    profiles: new Map([
+      [owner.id, { displayName: "", bio: "", theme: "dark" }],
+      [kidrianOwner.id, { displayName: "", bio: "", theme: "dark" }],
+    ]),
+    invites: [],
   };
 }
 
 export const demoStore = globalForDemo.synthnetDemoStore ?? createStore();
 globalForDemo.synthnetDemoStore = demoStore;
+
+// Preserve hot-reload state when a running development server upgrades from an
+// earlier store shape without weakening the production-only persistence rule.
+const legacyStore = demoStore as DemoStore & {
+  profiles?: Map<string, ProfileRecord>;
+  invites?: InviteRecord[];
+};
+legacyStore.profiles ??= new Map(
+  [...demoStore.accounts.values()].map((account) => [account.id, { displayName: "", bio: "", theme: "dark" as const }]),
+);
+legacyStore.invites ??= [];
 
 export function isDemoMode() {
   if (getServerEnvironment().SYNTHNET_DEMO_MODE === "true") return true;

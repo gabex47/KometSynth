@@ -13,7 +13,7 @@ const createSchema = z.object({
 
 const patchSchema = z.object({
   accountId: z.string().uuid(),
-  action: z.enum(["lock", "unlock", "disable", "enable", "reset_pin", "set_role"]),
+  action: z.enum(["lock", "unlock", "disable", "enable", "reset_pin", "set_role", "force_logout", "delete"]),
   pin: z.string().regex(/^\d{6,12}$/).optional(),
   accountType: z.enum(["normal", "admin", "owner"]).optional(),
 }).strict().superRefine((value, context) => {

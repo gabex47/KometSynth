@@ -207,9 +207,12 @@ export async function createSession(account: SafeAccount, ip: string, userAgent:
 
   if (isDemoMode()) {
     demoStore.sessions.set(tokenHash, {
+      id: randomUUID(),
       accountId: account.id,
       expiresAt: expiresAt.getTime(),
       createdAt: Date.now(),
+      ip,
+      userAgent: userAgent.slice(0, 512),
     });
     await logActivity(account.username, "login_success", ip);
   } else {
