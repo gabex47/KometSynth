@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { getCurrentSessionContext } from "@/lib/server/auth";
 import { apiError, apiOk, isSameOrigin, readJsonBody } from "@/lib/server/http";
-import { getConversationMessages, sendMessage, updateMessage } from "@/lib/server/social";
+import { getConversationMessages, getConversationTyping, sendMessage, updateMessage } from "@/lib/server/social";
 import { socialApiError } from "@/lib/server/social-http";
 
 const sendSchema = z.object({
@@ -19,7 +19,7 @@ const actionSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("pin"), conversationId: z.string().uuid(), messageId: z.string().uuid() }).strict(),
   z.object({ action: z.literal("read"), conversationId: z.string().uuid(), messageId: z.string().uuid() }).strict(),
   z.object({ action: z.literal("report"), conversationId: z.string().uuid(), messageId: z.string().uuid(), reason: z.enum(["spam", "harassment", "hate", "sexual", "violence", "impersonation", "other"]), details: z.string().trim().max(1_000).optional() }).strict(),
-  z.object({ action: z.literal("typing"), conversationId: z.string().uuid() }).strict(),
+  z.object({ action: z.literal("typing"), conversationId: z.string().uuid(), active: z.boolean().default(true) }).strict(),
 ]);
 
 export async function GET(request: Request) {
@@ -28,9 +28,13 @@ export async function GET(request: Request) {
   try {
     const parameters = new URL(request.url).searchParams;
     const conversationId = z.string().uuid().parse(parameters.get("conversationId"));
-    const before = parameters.get("before") ?? undefined;
+    if (parameters.get("typingOnly") === "true") {
+      return apiOk({ messages: [], hasMore: false, typing: await getConversationTyping(context, conversationId) });
+    }
+    const before = z.string().datetime({ offset: true }).optional().parse(parameters.get("before") ?? undefined);
     const query = parameters.get("q")?.slice(0, 100) ?? undefined;
-    return apiOk(await getConversationMessages(context, conversationId, { before, query }));
+    const messageIds = z.array(z.string().uuid()).max(20).parse(parameters.getAll("id"));
+    return apiOk(await getConversationMessages(context, conversationId, { before, query, messageIds, includeTyping: messageIds.length === 0 }));
   } catch (error) {
     return socialApiError(error, "Unable to load messages.");
   }

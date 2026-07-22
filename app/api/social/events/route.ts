@@ -18,34 +18,62 @@ export async function GET(request: Request) {
   const encoder = new TextEncoder();
   let closed = false;
   let keepAlive: ReturnType<typeof setInterval> | null = null;
+  let channel: ReturnType<typeof database.channel> | null = null;
+  let cleaned = false;
+
+  const cleanup = () => {
+    if (cleaned) return;
+    cleaned = true;
+    if (keepAlive) clearInterval(keepAlive);
+    keepAlive = null;
+    if (channel) void database.removeChannel(channel);
+    channel = null;
+    void touchPresence(context);
+  };
 
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
       const emit = (event: string, data: Record<string, unknown> = {}) => {
         if (closed) return;
         try { controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)); }
-        catch { closed = true; }
+        catch { closed = true; cleanup(); }
       };
 
-      const channel = database.channel(`social:${context.account.id}:${crypto.randomUUID()}`)
+      channel = database.channel(`social:${context.account.id}:${crypto.randomUUID()}`)
         .on("postgres_changes", { event: "*", schema: "public", table: "messages" }, (payload) => {
           const record = (payload.new && Object.keys(payload.new).length ? payload.new : payload.old) as Record<string, unknown>;
-          if (typeof record.conversation_id === "string" && conversations.has(record.conversation_id)) emit("refresh", { scope: "messages", conversationId: record.conversation_id });
+          if (typeof record.conversation_id === "string" && conversations.has(record.conversation_id)) {
+            emit("refresh", {
+              scope: "messages",
+              conversationId: record.conversation_id,
+              messageId: record.id,
+              eventType: payload.eventType,
+              message: payload.eventType === "DELETE" ? undefined : {
+                id: record.id,
+                senderId: record.sender_id,
+                kind: record.kind,
+                content: record.content,
+                replyToId: record.reply_to_id,
+                createdAt: record.created_at,
+                editedAt: record.edited_at,
+                deletedAt: record.deleted_at,
+              },
+            });
+          }
         })
         .on("postgres_changes", { event: "*", schema: "public", table: "message_reactions" }, async (payload) => {
           const record = (payload.new && Object.keys(payload.new).length ? payload.new : payload.old) as Record<string, unknown>;
           if (typeof record.message_id !== "string") return;
           const { data: message } = await database.from("messages").select("conversation_id").eq("id", record.message_id).maybeSingle();
-          if (message && conversations.has(message.conversation_id)) emit("refresh", { scope: "messages", conversationId: message.conversation_id });
+          if (message && conversations.has(message.conversation_id)) emit("refresh", { scope: "messages", conversationId: message.conversation_id, messageId: record.message_id, eventType: payload.eventType });
         })
         .on("postgres_changes", { event: "*", schema: "public", table: "message_receipts" }, async (payload) => {
           const record = (payload.new && Object.keys(payload.new).length ? payload.new : payload.old) as Record<string, unknown>;
           if (typeof record.message_id !== "string") return;
           const { data: message } = await database.from("messages").select("conversation_id").eq("id", record.message_id).maybeSingle();
-          if (message && conversations.has(message.conversation_id)) emit("refresh", { scope: "messages", conversationId: message.conversation_id });
+          if (message && conversations.has(message.conversation_id)) emit("refresh", { scope: "messages", conversationId: message.conversation_id, messageId: record.message_id, eventType: payload.eventType });
         })
         .on("postgres_changes", { event: "*", schema: "public", table: "notifications", filter: `account_id=eq.${context.account.id}` }, () => emit("refresh", { scope: "notifications" }))
-        .on("postgres_changes", { event: "*", schema: "public", table: "user_presence" }, () => emit("refresh", { scope: "presence" }))
         .on("postgres_changes", { event: "*", schema: "public", table: "typing_indicators" }, (payload) => {
           const record = (payload.new && Object.keys(payload.new).length ? payload.new : payload.old) as Record<string, unknown>;
           if (typeof record.conversation_id === "string" && conversations.has(record.conversation_id)) emit("refresh", { scope: "typing", conversationId: record.conversation_id });
@@ -69,19 +97,17 @@ export async function GET(request: Request) {
       }, 25_000);
 
       const close = () => {
-        if (closed) return;
-        closed = true;
-        if (keepAlive) clearInterval(keepAlive);
-        void database.removeChannel(channel);
-        void touchPresence(context);
-        try { controller.close(); } catch { /* already closed by the client */ }
+        if (!closed) {
+          closed = true;
+          try { controller.close(); } catch { /* already closed by the client */ }
+        }
+        cleanup();
       };
       request.signal.addEventListener("abort", close, { once: true });
     },
     cancel() {
       closed = true;
-      if (keepAlive) clearInterval(keepAlive);
-      void touchPresence(context);
+      cleanup();
     },
   });
 

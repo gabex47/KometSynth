@@ -1,10 +1,16 @@
 import { z } from "zod";
 import { getCurrentSessionContext } from "@/lib/server/auth";
 import { apiError, apiOk, isSameOrigin, readJsonBody } from "@/lib/server/http";
-import { getSocialBootstrap, reportSocialProfile, updateSocialProfile } from "@/lib/server/social";
+import { getSocialProfile, reportSocialProfile, updateSocialProfile } from "@/lib/server/social";
 import { socialApiError } from "@/lib/server/social-http";
 
-const linkSchema = z.object({ label: z.string().trim().min(1).max(40), url: z.string().url().max(300) }).strict();
+const linkSchema = z.object({
+  label: z.string().trim().min(1).max(40),
+  url: z.string().url().max(300).refine((value) => {
+    try { return ["http:", "https:"].includes(new URL(value).protocol); }
+    catch { return false; }
+  }, "Links must use HTTP or HTTPS."),
+}).strict();
 const schema = z.object({
   displayName: z.string().trim().max(80),
   bio: z.string().trim().max(500),
@@ -18,10 +24,9 @@ export async function GET(request: Request) {
   const context = await getCurrentSessionContext();
   if (!context) return apiError("Authentication required.", 401);
   try {
-    const username = new URL(request.url).searchParams.get("username")?.toLowerCase() ?? context.account.username;
-    const social = await getSocialBootstrap(context, username);
-    const profile = username === context.account.username ? social.self : social.people.find((person) => person.username === username);
-    return profile ? apiOk({ profile }) : apiError("Profile not found.", 404);
+    const username = z.string().trim().toLowerCase().regex(/^[a-z0-9_-]{3,32}$/)
+      .parse(new URL(request.url).searchParams.get("username") ?? context.account.username);
+    return apiOk({ profile: await getSocialProfile(context, username) });
   } catch (error) {
     return socialApiError(error, "Unable to load the profile.");
   }

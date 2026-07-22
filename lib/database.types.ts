@@ -96,7 +96,7 @@ export type Database = {
       notifications: {
         Row: { id: string; account_id: string; actor_id: string | null; kind: NotificationKind; title: string; body: string; conversation_id: string | null; message_id: string | null; friendship_id: string | null; invite_id: string | null; metadata: Json; created_at: string; read_at: string | null };
         Insert: { id?: string; account_id: string; actor_id?: string | null; kind: NotificationKind; title: string; body?: string; conversation_id?: string | null; message_id?: string | null; friendship_id?: string | null; invite_id?: string | null; metadata?: Json; created_at?: string; read_at?: string | null };
-        Update: { read_at?: string | null };
+        Update: { body?: string; read_at?: string | null };
         Relationships: [];
       };
       world_chat_settings: {

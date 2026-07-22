@@ -59,6 +59,18 @@ type FriendshipRow = {
 };
 
 type PresenceRow = { account_id: string; state: PresenceState; last_seen_at: string };
+type MessageAttachmentRow = {
+  id: string;
+  conversation_id: string;
+  message_id: string | null;
+  uploader_id: string;
+  storage_path: string;
+  file_name: string;
+  mime_type: string;
+  byte_size: number;
+  duration_seconds: number | null;
+  created_at: string;
+};
 
 function socialUnavailable() {
   if (isDemoMode()) throw new Error("Social features require persistent Supabase mode.");
@@ -69,9 +81,11 @@ function safeLinks(value: unknown): ProfileLink[] {
   return value.flatMap((item) => {
     if (!item || typeof item !== "object") return [];
     const candidate = item as Record<string, unknown>;
-    return typeof candidate.label === "string" && typeof candidate.url === "string"
-      ? [{ label: candidate.label, url: candidate.url }]
-      : [];
+    if (typeof candidate.label !== "string" || typeof candidate.url !== "string") return [];
+    try {
+      if (!["http:", "https:"].includes(new URL(candidate.url).protocol)) return [];
+      return [{ label: candidate.label, url: candidate.url }];
+    } catch { return []; }
   }).slice(0, 8);
 }
 
@@ -101,7 +115,7 @@ function otherAccountId(friendship: FriendshipRow, accountId: string) {
   return friendship.requester_id === accountId ? friendship.addressee_id : friendship.requester_id;
 }
 
-async function profileMap(accountIds: string[], viewerId: string) {
+async function profileMap(accountIds: string[], viewerId: string, options: { includeActivity?: boolean } = {}) {
   const uniqueIds = [...new Set(accountIds)];
   if (!uniqueIds.length) return new Map<string, SocialProfile>();
   const database = getSupabaseAdmin();
@@ -124,7 +138,7 @@ async function profileMap(accountIds: string[], viewerId: string) {
   const blockedByIds = new Set((blocks ?? []).filter((block) => block.blocked_id === viewerId).map((block) => block.blocker_id));
   const urls = await signedUrlMap((profiles ?? []).flatMap((profile) => [profile.avatar_path, profile.banner_path]));
   const usernames = ((accounts ?? []) as AccountRow[]).map((account) => account.username);
-  const { data: activities } = usernames.length
+  const { data: activities } = options.includeActivity && usernames.length
     ? await database.from("activity_logs").select("user, action, timestamp").in("user", usernames).order("timestamp", { ascending: false }).limit(Math.min(usernames.length * 5, 400))
     : { data: [] };
 
@@ -160,6 +174,55 @@ async function profileMap(accountIds: string[], viewerId: string) {
       recentActivity: account.id === viewerId || privacy.activity === "everyone" || friendship?.state === "accepted"
         ? (activities ?? []).filter((activity) => activity.user === account.username).slice(0, 5).map((activity) => ({ action: activity.action, timestamp: activity.timestamp }))
         : [],
+      privacy,
+    };
+    return [account.id, item] as const;
+  }));
+}
+
+async function messageProfileMap(accountIds: string[], viewerId: string) {
+  const uniqueIds = [...new Set(accountIds)];
+  if (!uniqueIds.length) return new Map<string, SocialProfile>();
+  const database = getSupabaseAdmin();
+  const [{ data: accounts, error: accountError }, { data: profiles, error: profileError }, { data: presences }] = await Promise.all([
+    database.from("accounts").select("id, username, account_type, created_at").in("id", uniqueIds).eq("disabled", false),
+    database.from("account_profiles").select("account_id, display_name, bio, avatar_path, banner_path, links, status_text, badges, privacy").in("account_id", uniqueIds),
+    database.from("user_presence").select("account_id, state, last_seen_at").in("account_id", uniqueIds),
+  ]);
+  if (accountError || profileError) throw new Error("Unable to load message authors.");
+
+  const profileById = new Map((profiles ?? []).map((profile) => [profile.account_id, profile as ProfileRow]));
+  const presenceById = new Map((presences ?? []).map((presence) => [presence.account_id, presence as PresenceRow]));
+  const urls = await signedUrlMap((profiles ?? []).map((profile) => profile.avatar_path));
+
+  return new Map(((accounts ?? []) as AccountRow[]).map((account) => {
+    const profile = profileById.get(account.id);
+    const presence = presenceById.get(account.id);
+    const privacy = safePrivacy(profile?.privacy);
+    const item: SocialProfile = {
+      id: account.id,
+      username: account.username,
+      displayName: profile?.display_name || account.username,
+      bio: profile?.bio ?? "",
+      statusText: profile?.status_text ?? "",
+      accountType: account.account_type,
+      badges: profile?.badges ?? [],
+      links: safeLinks(profile?.links),
+      avatarUrl: profile?.avatar_path ? urls.get(profile.avatar_path) ?? null : null,
+      bannerUrl: null,
+      presence: account.id === viewerId || privacy.presence
+        ? presence && Date.parse(presence.last_seen_at) > Date.now() - 90_000 ? presence.state : "offline"
+        : "offline",
+      lastSeenAt: account.id === viewerId || privacy.presence ? presence?.last_seen_at ?? null : null,
+      joinedAt: account.created_at,
+      friendship: null,
+      friendshipId: null,
+      friendshipDirection: null,
+      blocked: false,
+      blockedBy: false,
+      mutualFriends: 0,
+      mutualGroups: 0,
+      recentActivity: [],
       privacy,
     };
     return [account.id, item] as const;
@@ -221,36 +284,6 @@ export async function getSocialBootstrap(context: SessionContext, query = ""): P
   const profiles = await profileMap([...allAccountIds], context.account.id);
   const self = profiles.get(context.account.id);
   if (!self) throw new Error("Unable to load your profile.");
-
-  const profileIds = [...profiles.keys()];
-  const { data: networkFriendships } = profileIds.length ? await database.from("friendships")
-    .select("requester_id, addressee_id")
-    .eq("state", "accepted")
-    .or(`requester_id.in.(${profileIds.join(",")}),addressee_id.in.(${profileIds.join(",")})`)
-    .limit(5_000) : { data: [] };
-  const friendSets = new Map<string, Set<string>>();
-  for (const friendship of networkFriendships ?? []) {
-    const requester = friendSets.get(friendship.requester_id) ?? new Set<string>();
-    const addressee = friendSets.get(friendship.addressee_id) ?? new Set<string>();
-    requester.add(friendship.addressee_id);
-    addressee.add(friendship.requester_id);
-    friendSets.set(friendship.requester_id, requester);
-    friendSets.set(friendship.addressee_id, addressee);
-  }
-  const viewerFriends = friendSets.get(context.account.id) ?? new Set<string>();
-  const groupMemberships = new Map<string, Set<string>>();
-  for (const membership of allMembers ?? []) {
-    const set = groupMemberships.get(membership.account_id) ?? new Set<string>();
-    set.add(membership.conversation_id);
-    groupMemberships.set(membership.account_id, set);
-  }
-  const viewerGroups = groupMemberships.get(context.account.id) ?? new Set<string>();
-  for (const target of profiles.values()) {
-    if (target.id === context.account.id || target.privacy.mutuals) {
-      target.mutualFriends = [...(friendSets.get(target.id) ?? [])].filter((id) => viewerFriends.has(id)).length;
-      target.mutualGroups = [...(groupMemberships.get(target.id) ?? [])].filter((id) => viewerGroups.has(id)).length;
-    }
-  }
 
   const membershipByConversation = new Map((memberships ?? []).map((membership) => [membership.conversation_id, membership]));
   const membersByConversation = new Map<string, ConversationMember[]>();
@@ -321,54 +354,122 @@ export async function getSocialBootstrap(context: SessionContext, query = ""): P
   };
 }
 
+export async function getSocialProfile(context: SessionContext, username: string) {
+  socialUnavailable();
+  const database = getSupabaseAdmin();
+  const { data: account } = await database.from("accounts")
+    .select("id")
+    .eq("username", username.toLowerCase())
+    .eq("disabled", false)
+    .maybeSingle();
+  if (!account) throw Object.assign(new Error("Profile not found."), { status: 404 });
+
+  const profiles = await profileMap([account.id], context.account.id, { includeActivity: true });
+  const profile = profiles.get(account.id);
+  if (!profile || (account.id !== context.account.id && (profile.blocked || profile.blockedBy))) {
+    throw Object.assign(new Error("Profile not found."), { status: 404 });
+  }
+  if (account.id === context.account.id || !profile.privacy.mutuals) return profile;
+
+  const ids = [context.account.id, account.id];
+  const [{ data: friendships }, { data: memberships }] = await Promise.all([
+    database.from("friendships")
+      .select("id, requester_id, addressee_id, state, created_at, responded_at")
+      .eq("state", "accepted")
+      .or(`requester_id.in.(${ids.join(",")}),addressee_id.in.(${ids.join(",")})`)
+      .limit(5_000),
+    database.from("conversation_members").select("conversation_id, account_id").in("account_id", ids),
+  ]);
+  const friendSets = new Map<string, Set<string>>(ids.map((id) => [id, new Set<string>()]));
+  for (const friendship of (friendships ?? []) as FriendshipRow[]) {
+    if (friendSets.has(friendship.requester_id)) friendSets.get(friendship.requester_id)!.add(friendship.addressee_id);
+    if (friendSets.has(friendship.addressee_id)) friendSets.get(friendship.addressee_id)!.add(friendship.requester_id);
+  }
+  const viewerFriends = friendSets.get(context.account.id) ?? new Set<string>();
+  profile.mutualFriends = [...(friendSets.get(account.id) ?? [])].filter((id) => viewerFriends.has(id)).length;
+
+  const viewerConversationIds = new Set((memberships ?? []).filter((item) => item.account_id === context.account.id).map((item) => item.conversation_id));
+  const sharedConversationIds = [...new Set((memberships ?? [])
+    .filter((item) => item.account_id === account.id && viewerConversationIds.has(item.conversation_id))
+    .map((item) => item.conversation_id))];
+  if (sharedConversationIds.length) {
+    const { count } = await database.from("conversations")
+      .select("id", { count: "exact", head: true })
+      .in("id", sharedConversationIds)
+      .eq("kind", "group")
+      .is("deleted_at", null);
+    profile.mutualGroups = count ?? 0;
+  }
+  return profile;
+}
+
 export async function getConversationMessages(
   context: SessionContext,
   conversationId: string,
-  options: { before?: string; query?: string; limit?: number } = {},
+  options: { before?: string; query?: string; limit?: number; messageIds?: string[]; includeTyping?: boolean } = {},
 ): Promise<{ messages: ChatMessage[]; hasMore: boolean; typing: SocialProfile[] }> {
   socialUnavailable();
-  await requireConversation(context, conversationId);
   const database = getSupabaseAdmin();
+  const access = requireConversation(context, conversationId);
   const limit = Math.min(Math.max(options.limit ?? 40, 1), 80);
+  const requestedMessageIds = [...new Set(options.messageIds ?? [])].slice(0, 20);
+  const exactMessages = requestedMessageIds.length > 0;
   let query = database.from("messages")
     .select("id, conversation_id, sender_id, kind, content, reply_to_id, metadata, created_at, edited_at, deleted_at")
-    .eq("conversation_id", conversationId)
-    .order("created_at", { ascending: false })
-    .order("id", { ascending: false })
-    .limit(limit + 1);
-  if (options.before) query = query.lt("created_at", options.before);
-  if (options.query?.trim()) query = query.textSearch("search_vector", options.query.trim().slice(0, 100), { config: "simple", type: "websearch" });
-  const { data, error } = await query;
+    .eq("conversation_id", conversationId);
+  if (exactMessages) {
+    query = query.in("id", requestedMessageIds).order("created_at", { ascending: true }).order("id", { ascending: true }).limit(requestedMessageIds.length);
+  } else {
+    query = query.order("created_at", { ascending: false }).order("id", { ascending: false }).limit(limit + 1);
+    if (options.before) query = query.lt("created_at", options.before);
+    if (options.query?.trim()) query = query.textSearch("search_vector", options.query.trim().slice(0, 100), { config: "simple", type: "websearch" });
+  }
+  const [{ conversation }, { data, error }] = await Promise.all([access, query]);
   if (error) throw new Error("Unable to load messages.");
-  const page = (data ?? []).slice(0, limit);
-  const messageIds = page.map((message) => message.id);
+  const page = exactMessages ? (data ?? []) : (data ?? []).slice(0, limit);
+  const pageMessageIds = page.map((message) => message.id);
   const replyIds = page.flatMap((message) => message.reply_to_id ? [message.reply_to_id] : []);
   const [{ data: reactions }, { data: attachments }, { data: pins }, { data: receipts }, { data: replies }, { data: typing }] = await Promise.all([
-    messageIds.length ? database.from("message_reactions").select("message_id, account_id, emoji, created_at").in("message_id", messageIds) : Promise.resolve({ data: [] }),
-    messageIds.length ? database.from("message_attachments").select("id, conversation_id, message_id, uploader_id, storage_path, file_name, mime_type, byte_size, duration_seconds, created_at").in("message_id", messageIds) : Promise.resolve({ data: [] }),
-    messageIds.length ? database.from("pinned_messages").select("conversation_id, message_id, pinned_by, pinned_at").in("message_id", messageIds) : Promise.resolve({ data: [] }),
-    messageIds.length ? database.from("message_receipts").select("message_id, account_id, read_at").in("message_id", messageIds) : Promise.resolve({ data: [] }),
+    pageMessageIds.length ? database.from("message_reactions").select("message_id, account_id, emoji, created_at").in("message_id", pageMessageIds) : Promise.resolve({ data: [] }),
+    pageMessageIds.length ? database.from("message_attachments").select("id, conversation_id, message_id, uploader_id, storage_path, file_name, mime_type, byte_size, duration_seconds, created_at").in("message_id", pageMessageIds) : Promise.resolve({ data: [] }),
+    pageMessageIds.length ? database.from("pinned_messages").select("conversation_id, message_id, pinned_by, pinned_at").in("message_id", pageMessageIds) : Promise.resolve({ data: [] }),
+    pageMessageIds.length && conversation.kind !== "world" ? database.from("message_receipts").select("message_id, account_id, read_at").in("message_id", pageMessageIds) : Promise.resolve({ data: [] }),
     replyIds.length ? database.from("messages").select("id, sender_id, content").in("id", replyIds) : Promise.resolve({ data: [] }),
-    database.from("typing_indicators").select("conversation_id, account_id, expires_at").eq("conversation_id", conversationId).gt("expires_at", new Date().toISOString()).neq("account_id", context.account.id),
+    options.includeTyping === false || conversation.kind === "world"
+      ? Promise.resolve({ data: [] })
+      : database.from("typing_indicators").select("conversation_id, account_id, expires_at").eq("conversation_id", conversationId).gt("expires_at", new Date().toISOString()).neq("account_id", context.account.id),
   ]);
   const accountIds = [...new Set([
     ...page.flatMap((message) => message.sender_id ? [message.sender_id] : []),
     ...(replies ?? []).flatMap((reply) => reply.sender_id ? [reply.sender_id] : []),
     ...(typing ?? []).map((item) => item.account_id),
   ])];
-  const profiles = await profileMap(accountIds, context.account.id);
+  const profiles = await messageProfileMap(accountIds, context.account.id);
   const attachmentUrls = await signedUrlMap((attachments ?? []).map((attachment) => attachment.storage_path));
   const replyMap = new Map((replies ?? []).map((reply) => [reply.id, reply]));
+  const reactionsByMessage = new Map<string, Map<string, { count: number; reacted: boolean }>>();
+  for (const reaction of reactions ?? []) {
+    const reactionMap = reactionsByMessage.get(reaction.message_id) ?? new Map<string, { count: number; reacted: boolean }>();
+    const current = reactionMap.get(reaction.emoji) ?? { count: 0, reacted: false };
+    current.count += 1;
+    if (reaction.account_id === context.account.id) current.reacted = true;
+    reactionMap.set(reaction.emoji, current);
+    reactionsByMessage.set(reaction.message_id, reactionMap);
+  }
+  const attachmentsByMessage = new Map<string, MessageAttachmentRow[]>();
+  for (const attachment of attachments ?? []) {
+    if (!attachment.message_id) continue;
+    const list = attachmentsByMessage.get(attachment.message_id) ?? [];
+    list.push(attachment);
+    attachmentsByMessage.set(attachment.message_id, list);
+  }
+  const pinnedMessageIds = new Set((pins ?? []).map((pin) => pin.message_id));
+  const receiptCounts = new Map<string, number>();
+  for (const receipt of receipts ?? []) receiptCounts.set(receipt.message_id, (receiptCounts.get(receipt.message_id) ?? 0) + 1);
 
-  const messages: ChatMessage[] = page.reverse().map((message) => {
-    const reactionMap = new Map<string, { count: number; reacted: boolean }>();
-    for (const reaction of reactions ?? []) {
-      if (reaction.message_id !== message.id) continue;
-      const current = reactionMap.get(reaction.emoji) ?? { count: 0, reacted: false };
-      current.count += 1;
-      if (reaction.account_id === context.account.id) current.reacted = true;
-      reactionMap.set(reaction.emoji, current);
-    }
+  const orderedPage = exactMessages ? page : page.reverse();
+  const messages: ChatMessage[] = orderedPage.map((message) => {
+    const reactionMap = reactionsByMessage.get(message.id) ?? new Map<string, { count: number; reacted: boolean }>();
     const reply = message.reply_to_id ? replyMap.get(message.reply_to_id) : null;
     return {
       id: message.id,
@@ -378,7 +479,7 @@ export async function getConversationMessages(
       content: message.deleted_at ? "" : message.content,
       replyTo: reply ? { id: reply.id, content: reply.content, username: reply.sender_id ? profiles.get(reply.sender_id)?.username ?? null : null } : null,
       reactions: [...reactionMap.entries()].map(([emoji, value]) => ({ emoji, ...value })),
-      attachments: (attachments ?? []).filter((attachment) => attachment.message_id === message.id).map((attachment) => ({
+      attachments: (attachmentsByMessage.get(message.id) ?? []).map((attachment) => ({
         id: attachment.id,
         name: attachment.file_name,
         mimeType: attachment.mime_type,
@@ -389,12 +490,27 @@ export async function getConversationMessages(
       createdAt: message.created_at,
       editedAt: message.edited_at,
       deletedAt: message.deleted_at,
-      pinned: (pins ?? []).some((pin) => pin.message_id === message.id),
-      readBy: (receipts ?? []).filter((receipt) => receipt.message_id === message.id).length,
+      pinned: pinnedMessageIds.has(message.id),
+      readBy: receiptCounts.get(message.id) ?? (message.sender_id === context.account.id ? 1 : 0),
     };
   });
 
-  return { messages, hasMore: (data ?? []).length > limit, typing: (typing ?? []).flatMap((item) => profiles.get(item.account_id) ?? []) };
+  return { messages, hasMore: !exactMessages && (data ?? []).length > limit, typing: (typing ?? []).flatMap((item) => profiles.get(item.account_id) ?? []) };
+}
+
+export async function getConversationTyping(context: SessionContext, conversationId: string) {
+  socialUnavailable();
+  const database = getSupabaseAdmin();
+  const { conversation } = await requireConversation(context, conversationId);
+  if (conversation.kind === "world") return [];
+  const { data, error } = await database.from("typing_indicators")
+    .select("account_id, expires_at")
+    .eq("conversation_id", conversationId)
+    .gt("expires_at", new Date().toISOString())
+    .neq("account_id", context.account.id);
+  if (error) throw new Error("Unable to load typing status.");
+  const profiles = await messageProfileMap((data ?? []).map((item) => item.account_id), context.account.id);
+  return (data ?? []).flatMap((item) => profiles.get(item.account_id) ?? []);
 }
 
 export async function createConversation(context: SessionContext, input: { kind: "direct"; username: string } | { kind: "group"; name: string; usernames: string[] }) {
@@ -410,35 +526,76 @@ export async function createConversation(context: SessionContext, input: { kind:
 export async function sendMessage(context: SessionContext, input: { conversationId: string; content: string; kind: MessageKind; replyToId?: string | null; attachmentIds?: string[] }) {
   socialUnavailable();
   const database = getSupabaseAdmin();
+  const attachmentIds = [...new Set(input.attachmentIds ?? [])];
+  let validatedAttachmentCount = 0;
+  if (attachmentIds.length) {
+    const { data: attachments, error: attachmentError } = await database.from("message_attachments")
+      .select("id")
+      .in("id", attachmentIds)
+      .eq("uploader_id", context.account.id)
+      .eq("conversation_id", input.conversationId)
+      .is("message_id", null);
+    if (attachmentError || attachments?.length !== attachmentIds.length) {
+      throw Object.assign(new Error("One or more attachments are unavailable. Upload them again and retry."), { status: 422 });
+    }
+    validatedAttachmentCount = attachments.length;
+  }
+  const rpcKind = input.kind === "text" && !input.content.trim() && attachmentIds.length ? "document" : input.kind;
+  // The database's duplicate-send guard compares content. Use a unique temporary label for
+  // attachment-only sends, then clear it after linking so consecutive uploads are not rejected.
+  const rpcContent = input.content.trim() || !validatedAttachmentCount
+    ? input.content
+    : `Attachment [${attachmentIds[0]}]`;
   const { data, error } = await database.rpc("send_social_message", {
     p_actor_session_hash: context.tokenHash,
     p_conversation_id: input.conversationId,
-    p_content: input.content,
-    p_kind: input.kind,
+    p_content: rpcContent,
+    p_kind: rpcKind,
     p_reply_to_id: input.replyToId ?? null,
   });
   if (error || !data) {
-    const message = error?.message.includes("slow mode") ? "Slow mode is active. Please wait before sending again."
-      : error?.message.includes("content filter") ? "That message was blocked by the world-chat content filter."
-      : error?.message.includes("links are disabled") ? "Links are currently disabled in World Chat."
-      : error?.message.includes("rate") || error?.message.includes("duplicate") ? "You are sending messages too quickly."
-      : "Unable to send the message.";
-    throw Object.assign(new Error(message), { status: 429 });
+    const reason = error?.message ?? "";
+    if (reason.includes("slow mode")) throw Object.assign(new Error("Slow mode is active. Please wait before sending again."), { status: 429 });
+    if (reason.includes("rate") || reason.includes("duplicate")) throw Object.assign(new Error("You are sending messages too quickly."), { status: 429 });
+    if (reason.includes("content filter")) throw Object.assign(new Error("That message was blocked by the world-chat content filter."), { status: 422 });
+    if (reason.includes("links are disabled")) throw Object.assign(new Error("Links are currently disabled in World Chat."), { status: 422 });
+    if (reason.includes("membership") || reason.includes("conversation unavailable")) throw Object.assign(new Error("That conversation is unavailable."), { status: 403 });
+    throw new Error("Unable to send the message.");
   }
-  if (input.attachmentIds?.length) {
-    const { error: attachmentError } = await database.from("message_attachments").update({ message_id: data })
-      .in("id", input.attachmentIds).eq("uploader_id", context.account.id).eq("conversation_id", input.conversationId).is("message_id", null);
-    if (attachmentError) throw new Error("Message sent, but its attachment could not be linked.");
+  if (attachmentIds.length) {
+    const { data: linked, error: attachmentError } = await database.from("message_attachments").update({ message_id: data })
+      .in("id", attachmentIds).eq("uploader_id", context.account.id).eq("conversation_id", input.conversationId).is("message_id", null).select("id");
+    if (attachmentError || linked?.length !== attachmentIds.length) {
+      await database.from("message_attachments").update({ message_id: null }).eq("message_id", data);
+      await database.from("messages").delete().eq("id", data).eq("sender_id", context.account.id);
+      throw new Error("Unable to link the message attachments. Please retry.");
+    }
+    // Emit a second message event only after attachment linking is complete so other clients cannot hydrate too early.
+    const { error: finalizeError } = await database.from("messages")
+      .update({ content: input.content, metadata: { attachments: attachmentIds.length, attachmentsOnly: !input.content.trim() } })
+      .eq("id", data);
+    if (finalizeError) {
+      await database.from("message_attachments").update({ message_id: null }).eq("message_id", data);
+      await database.from("messages").delete().eq("id", data).eq("sender_id", context.account.id);
+      throw new Error("Unable to finish sending the attachments. Please retry.");
+    }
+    if (!input.content.trim()) {
+      await database.from("notifications").update({ body: "Sent an attachment" }).eq("message_id", data);
+    }
   }
   return data;
 }
 
-export async function updateMessage(context: SessionContext, input: { action: "edit" | "delete" | "react" | "pin" | "read" | "report" | "typing"; conversationId: string; messageId?: string; content?: string; emoji?: string; reason?: string; details?: string }) {
+export async function updateMessage(context: SessionContext, input: { action: "edit" | "delete" | "react" | "pin" | "read" | "report" | "typing"; conversationId: string; messageId?: string; content?: string; emoji?: string; reason?: string; details?: string; active?: boolean }) {
   socialUnavailable();
   const { conversation, role } = await requireConversation(context, input.conversationId);
   const database = getSupabaseAdmin();
   if (input.action === "typing") {
-    await database.from("typing_indicators").upsert({ conversation_id: input.conversationId, account_id: context.account.id, expires_at: new Date(Date.now() + 8_000).toISOString() });
+    if (conversation.kind === "world") return;
+    const result = input.active === false
+      ? await database.from("typing_indicators").delete().eq("conversation_id", input.conversationId).eq("account_id", context.account.id)
+      : await database.from("typing_indicators").upsert({ conversation_id: input.conversationId, account_id: context.account.id, expires_at: new Date(Date.now() + 8_000).toISOString() });
+    if (result.error) throw new Error("Unable to update typing status.");
     return;
   }
   if (!input.messageId) throw new Error("A message is required.");
@@ -475,7 +632,8 @@ export async function updateMessage(context: SessionContext, input: { action: "e
       : await database.from("pinned_messages").insert({ conversation_id: input.conversationId, message_id: message.id, pinned_by: context.account.id });
     if (result.error) throw new Error("Unable to update the pin.");
   } else if (input.action === "read") {
-    if (conversation.kind !== "world") await database.from("conversation_members").update({ last_read_at: new Date().toISOString() }).eq("conversation_id", input.conversationId).eq("account_id", context.account.id);
+    if (conversation.kind === "world") return;
+    await database.from("conversation_members").update({ last_read_at: new Date().toISOString() }).eq("conversation_id", input.conversationId).eq("account_id", context.account.id);
     await database.from("message_receipts").upsert({ message_id: message.id, account_id: context.account.id, read_at: new Date().toISOString() });
   } else if (input.action === "report") {
     if (message.sender_id === context.account.id) throw new Error("You cannot report your own message.");

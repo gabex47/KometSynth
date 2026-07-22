@@ -509,6 +509,7 @@ button.social-avatar { cursor: pointer; }
 .older-messages { min-height: 30px; display: flex; align-items: center; gap: 7px; margin: 0 auto 20px; border: 1px solid #2c2c2c; border-radius: 15px; background: #0c0c0c; color: #666; padding: 0 12px; cursor: pointer; font: 6px var(--font-mono); }
 .chat-message { position: relative; display: grid; grid-template-columns: 30px minmax(0, 1fr); gap: 10px; margin: 0 -8px 4px; padding: 7px 8px; border-radius: 8px; }
 .chat-message:hover { background: #0c0c0c; }
+.chat-message.pending { opacity: .68; }
 .chat-message.deleted { min-height: 40px; align-items: center; color: #4f4f4f; font-style: italic; font-size: 8px; }
 .chat-message.deleted p { margin: 0 0 3px; }
 .chat-message.deleted time { font: 6px var(--font-mono); }
