@@ -6,10 +6,11 @@ export class ApiRequestError extends Error {
 }
 
 export async function apiRequest<T>(url: string, init?: RequestInit): Promise<T> {
+  const isFormData = typeof FormData !== "undefined" && init?.body instanceof FormData;
   const response = await fetch(url, {
     ...init,
     headers: init?.body
-      ? { "Content-Type": "application/json", ...init.headers }
+      ? { ...(!isFormData ? { "Content-Type": "application/json" } : {}), ...init.headers }
       : init?.headers,
   });
   const contentType = response.headers.get("content-type") ?? "";

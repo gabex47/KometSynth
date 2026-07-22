@@ -2,13 +2,14 @@
 
 ## Project overview
 
-SynthNet is a private Next.js application for developer, network, security, utility, and bring-your-own-key AI workflows. It uses a custom username/PIN identity model because accounts do not require email addresses. Supabase provides PostgreSQL persistence, constraints, row-level security, atomic authorization functions, distributed rate limits, sessions, and audit records.
+SynthNet is a private Next.js application for social collaboration, developer, network, security, utility, and bring-your-own-key AI workflows. It uses a custom username/PIN identity model because accounts do not require email addresses. Supabase provides PostgreSQL persistence, private object storage, Realtime change delivery, constraints, row-level security, atomic authorization functions, distributed rate limits, sessions, notifications, and audit records.
 
 The trust boundary is intentional:
 
 - The browser renders the UI and runs local-only tools.
 - Next.js route handlers validate every request, enforce same-origin mutations, and call fixed upstream endpoints.
 - A server-only Supabase client uses the service-role key. The key is never shipped to the browser.
+- Authenticated server-sent event streams subscribe to Supabase Realtime and emit only account-authorized refresh signals; message and notification payloads remain behind authenticated APIs.
 - PostgreSQL functions revalidate custom sessions and make privileged writes and audit entries in one transaction.
 - `anon` and `authenticated` have no table or function access. RLS has no allow policies by design, so direct Data API access is denied.
 
@@ -23,9 +24,11 @@ app/
 components/
   app/                  Authenticated shell and lazy-loaded views
   auth/                 Login and invitation registration screens
+  social/               Realtime collaboration workspace
 lib/
   client/               Browser request and theme helpers
-  server/               Auth, profiles, registration, encryption, and limits
+  server/               Auth, social services, profiles, encryption, and limits
+  social/               Shared social domain types
   tools/                Registry-driven tool catalog
 scripts/                Secret-safe environment diagnostics
 supabase/migrations/    Ordered, immutable database migrations
@@ -123,6 +126,12 @@ For a brand-new database, the migrations create:
 - account-scoped dashboard summaries, keyset-paginated audit reads, and atomic API-key deletion
 - a non-exposed `private.rate_limits` table
 - bootstrap owner records stored with bcrypt hashes, never plaintext PINs
+- profiles, presence, friendships, blocks, conversations, group membership and invitations
+- messages, replies, edits, reactions, receipts, pins, attachments, typing state, reports, and moderation actions
+- account-scoped notifications and global-chat moderation settings
+- optimized conversation summaries, full-text/trigram message search, anti-spam constraints, and notification triggers
+- a private `social-uploads` Storage bucket with MIME and size restrictions
+- Realtime publication entries for the social tables used by the authenticated event bridge
 
 Do not edit a migration after it has been applied. Add a new migration for every schema change. Review SQL locally and use a staging project before a high-risk production migration.
 
@@ -164,18 +173,19 @@ The Settings view lets each signed-in account edit its display name, bio, and da
 
 ## Storage setup
 
-No Supabase Storage bucket is currently required. Do not create a public bucket for this application. If file features are added later:
+The social migration creates the private `social-uploads` bucket. Uploads are limited to 25 MB and an allowlist of image, video, audio, PDF, text, and common document formats. The server validates size and MIME type, writes randomized account-scoped paths, and returns short-lived signed URLs. Browser roles have no direct bucket access.
 
-1. use private buckets;
-2. validate MIME type and byte size server-side;
-3. use randomized object paths;
-4. add explicit Storage RLS policies;
-5. scan untrusted uploads before downstream processing;
-6. serve downloads with safe content disposition and content types.
+For production, add malware scanning or content-disarm processing before allowing untrusted documents to be downloaded outside the application. Keep the bucket private and do not add public read policies.
+
+## Realtime and presence
+
+The migration adds social tables to the `supabase_realtime` publication. The browser connects only to `/api/social/events`; the server validates the custom session, subscribes with the service-role client, checks conversation membership, and sends generic invalidation events. Data is then fetched through account-authorized APIs. This preserves the username/PIN trust model and never exposes the service role key.
+
+Presence is refreshed by the authenticated event stream and by idle/visibility heartbeats. Records older than 90 seconds are rendered offline, so an interrupted connection cannot leave a user permanently online.
 
 ## Edge Functions
 
-The current application uses no Edge Functions. Server-side provider calls remain in Next.js routes so custom sessions, encrypted keys, and same-origin checks share one security boundary. If an Edge Function is added, require a valid JWT unless the function implements and documents an equivalent custom authentication mechanism.
+The application uses database functions and triggers for atomic social writes, anti-spam, notification fan-out, authorization invariants, and moderation state. It intentionally keeps the HTTP/session bridge in Next.js rather than an Edge Function because end users authenticate with opaque SynthNet sessions rather than Supabase Auth JWTs. This keeps one audited session boundary and avoids forwarding the service-role key. If an Edge Function is added later, require a valid JWT unless it implements and documents equivalent custom-session verification.
 
 ## Run locally
 
@@ -195,6 +205,8 @@ SYNTHNET_DEMO_MODE=true npm run dev
 The demo store is server-only, resets when the process restarts, and is prohibited in production. Never use it for shared or sensitive data.
 
 Open `http://localhost:3000`. If another process owns the port, stop it or pass another port to Next and update `APP_ORIGIN` to match.
+
+On macOS, do not keep active Node.js repositories in Desktop/Documents when those folders are synchronized by iCloud or another File Provider. On-demand hydration can make `next start`, TypeScript, Git, and module resolution pause for minutes or produce transient missing-module errors. Move the checkout to a local development directory such as `~/Developer/KometSynth`, then run a clean `npm ci` and `npm run build` there.
 
 `npm run doctor` reads local environment files without printing secret values. It rejects anon keys in the service-role slot, malformed encryption keys, unsafe origins, unsupported runtimes, and suspicious public secret names.
 
@@ -274,6 +286,10 @@ Check the environment key type, confirm `npx supabase migration list`, and inspe
 ### Missing `.next/server/middleware-manifest.json` or `pages/_app.js`
 
 The build output is incomplete. Stop active Next.js processes, run `npm ci`, run `npm run build` to completion, and only then run `npm start`.
+
+### `Cannot find module '../route-kind'` inside `node_modules/next`
+
+The dependency tree is incomplete or a synchronized folder has offloaded part of `node_modules`. Move the checkout outside Desktop/iCloud, remove the incomplete dependency directory, run `npm ci`, and rebuild. Do not copy or synchronize `node_modules` or `.next` between machines.
 
 ### Mutation returns 403
 

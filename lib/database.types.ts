@@ -2,11 +2,121 @@
 export type Json = string | number | boolean | null | { [key: string]: Json | undefined } | Json[];
 
 type AccountType = "normal" | "admin" | "owner";
+type PresenceState = "online" | "away" | "dnd" | "offline";
+type ConversationKind = "direct" | "group" | "world";
+type ConversationRole = "owner" | "admin" | "member";
+type MessageKind = "text" | "image" | "video" | "document" | "voice" | "gif" | "system";
+type FriendshipState = "pending" | "accepted" | "declined";
+type InviteState = "pending" | "accepted" | "declined" | "revoked";
+type NotificationKind = "friend_request" | "friend_accepted" | "mention" | "direct_message" | "group_message" | "group_invite" | "reply" | "reaction" | "announcement";
+type ReportState = "open" | "reviewing" | "resolved" | "dismissed";
 
 export type Database = {
   __InternalSupabase: { PostgrestVersion: "14.5" };
   public: {
     Tables: {
+      conversations: {
+        Row: { id: string; kind: ConversationKind; name: string | null; description: string; avatar_path: string | null; owner_id: string | null; created_at: string; updated_at: string; deleted_at: string | null };
+        Insert: { id?: string; kind: ConversationKind; name?: string | null; description?: string; avatar_path?: string | null; owner_id?: string | null; created_at?: string; updated_at?: string; deleted_at?: string | null };
+        Update: { id?: string; kind?: ConversationKind; name?: string | null; description?: string; avatar_path?: string | null; owner_id?: string | null; created_at?: string; updated_at?: string; deleted_at?: string | null };
+        Relationships: [];
+      };
+      direct_conversation_pairs: {
+        Row: { conversation_id: string; account_low: string; account_high: string };
+        Insert: { conversation_id: string; account_low: string; account_high: string };
+        Update: { conversation_id?: string; account_low?: string; account_high?: string };
+        Relationships: [];
+      };
+      conversation_members: {
+        Row: { conversation_id: string; account_id: string; role: ConversationRole; joined_at: string; last_read_at: string; muted: boolean; notifications: string };
+        Insert: { conversation_id: string; account_id: string; role?: ConversationRole; joined_at?: string; last_read_at?: string; muted?: boolean; notifications?: string };
+        Update: { conversation_id?: string; account_id?: string; role?: ConversationRole; joined_at?: string; last_read_at?: string; muted?: boolean; notifications?: string };
+        Relationships: [];
+      };
+      messages: {
+        Row: { id: string; conversation_id: string; sender_id: string | null; kind: MessageKind; content: string; reply_to_id: string | null; metadata: Json; created_at: string; edited_at: string | null; deleted_at: string | null; search_vector: unknown };
+        Insert: { id?: string; conversation_id: string; sender_id?: string | null; kind?: MessageKind; content?: string; reply_to_id?: string | null; metadata?: Json; created_at?: string; edited_at?: string | null; deleted_at?: string | null };
+        Update: { content?: string; metadata?: Json; edited_at?: string | null; deleted_at?: string | null };
+        Relationships: [];
+      };
+      message_reactions: {
+        Row: { message_id: string; account_id: string; emoji: string; created_at: string };
+        Insert: { message_id: string; account_id: string; emoji: string; created_at?: string };
+        Update: { emoji?: string };
+        Relationships: [];
+      };
+      message_receipts: {
+        Row: { message_id: string; account_id: string; read_at: string };
+        Insert: { message_id: string; account_id: string; read_at?: string };
+        Update: { read_at?: string };
+        Relationships: [];
+      };
+      pinned_messages: {
+        Row: { conversation_id: string; message_id: string; pinned_by: string; pinned_at: string };
+        Insert: { conversation_id: string; message_id: string; pinned_by: string; pinned_at?: string };
+        Update: { pinned_by?: string; pinned_at?: string };
+        Relationships: [];
+      };
+      message_attachments: {
+        Row: { id: string; conversation_id: string; message_id: string | null; uploader_id: string; storage_path: string; file_name: string; mime_type: string; byte_size: number; duration_seconds: number | null; created_at: string };
+        Insert: { id?: string; conversation_id: string; message_id?: string | null; uploader_id: string; storage_path: string; file_name: string; mime_type: string; byte_size: number; duration_seconds?: number | null; created_at?: string };
+        Update: { message_id?: string | null; duration_seconds?: number | null };
+        Relationships: [];
+      };
+      typing_indicators: {
+        Row: { conversation_id: string; account_id: string; expires_at: string };
+        Insert: { conversation_id: string; account_id: string; expires_at: string };
+        Update: { expires_at?: string };
+        Relationships: [];
+      };
+      friendships: {
+        Row: { id: string; requester_id: string; addressee_id: string; state: FriendshipState; created_at: string; responded_at: string | null };
+        Insert: { id?: string; requester_id: string; addressee_id: string; state?: FriendshipState; created_at?: string; responded_at?: string | null };
+        Update: { state?: FriendshipState; responded_at?: string | null };
+        Relationships: [];
+      };
+      user_blocks: {
+        Row: { blocker_id: string; blocked_id: string; created_at: string };
+        Insert: { blocker_id: string; blocked_id: string; created_at?: string };
+        Update: never;
+        Relationships: [];
+      };
+      user_presence: {
+        Row: { account_id: string; state: PresenceState; last_seen_at: string; updated_at: string };
+        Insert: { account_id: string; state?: PresenceState; last_seen_at?: string; updated_at?: string };
+        Update: { state?: PresenceState; last_seen_at?: string; updated_at?: string };
+        Relationships: [];
+      };
+      group_invites: {
+        Row: { id: string; conversation_id: string; inviter_id: string; invitee_id: string; state: InviteState; created_at: string; expires_at: string; responded_at: string | null };
+        Insert: { id?: string; conversation_id: string; inviter_id: string; invitee_id: string; state?: InviteState; created_at?: string; expires_at?: string; responded_at?: string | null };
+        Update: { state?: InviteState; responded_at?: string | null };
+        Relationships: [];
+      };
+      notifications: {
+        Row: { id: string; account_id: string; actor_id: string | null; kind: NotificationKind; title: string; body: string; conversation_id: string | null; message_id: string | null; friendship_id: string | null; invite_id: string | null; metadata: Json; created_at: string; read_at: string | null };
+        Insert: { id?: string; account_id: string; actor_id?: string | null; kind: NotificationKind; title: string; body?: string; conversation_id?: string | null; message_id?: string | null; friendship_id?: string | null; invite_id?: string | null; metadata?: Json; created_at?: string; read_at?: string | null };
+        Update: { read_at?: string | null };
+        Relationships: [];
+      };
+      world_chat_settings: {
+        Row: { singleton: boolean; slow_mode_seconds: number; profanity_filter: boolean; links_allowed: boolean; updated_at: string; updated_by: string | null };
+        Insert: { singleton?: boolean; slow_mode_seconds?: number; profanity_filter?: boolean; links_allowed?: boolean; updated_at?: string; updated_by?: string | null };
+        Update: { slow_mode_seconds?: number; profanity_filter?: boolean; links_allowed?: boolean; updated_by?: string | null };
+        Relationships: [];
+      };
+      message_reports: {
+        Row: { id: string; reporter_id: string; message_id: string | null; reported_account_id: string | null; reason: string; details: string; state: ReportState; reviewed_by: string | null; created_at: string; reviewed_at: string | null };
+        Insert: { id?: string; reporter_id: string; message_id?: string | null; reported_account_id?: string | null; reason: string; details?: string; state?: ReportState; reviewed_by?: string | null; created_at?: string; reviewed_at?: string | null };
+        Update: { state?: ReportState; reviewed_by?: string | null; reviewed_at?: string | null };
+        Relationships: [];
+      };
+      moderation_actions: {
+        Row: { id: string; moderator_id: string; target_account_id: string | null; message_id: string | null; action: string; reason: string; expires_at: string | null; created_at: string };
+        Insert: { id?: string; moderator_id: string; target_account_id?: string | null; message_id?: string | null; action: string; reason?: string; expires_at?: string | null; created_at?: string };
+        Update: never;
+        Relationships: [];
+      };
       accounts: {
         Row: {
           account_type: AccountType;
@@ -59,9 +169,9 @@ export type Database = {
         }];
       };
       account_profiles: {
-        Row: { account_id: string; bio: string; display_name: string; theme: string; updated_at: string };
-        Insert: { account_id: string; bio?: string; display_name?: string; theme?: string; updated_at?: string };
-        Update: { account_id?: string; bio?: string; display_name?: string; theme?: string; updated_at?: string };
+        Row: { account_id: string; avatar_path: string | null; banner_path: string | null; badges: string[]; bio: string; display_name: string; links: Json; privacy: Json; status_text: string; theme: string; updated_at: string };
+        Insert: { account_id: string; avatar_path?: string | null; banner_path?: string | null; badges?: string[]; bio?: string; display_name?: string; links?: Json; privacy?: Json; status_text?: string; theme?: string; updated_at?: string };
+        Update: { account_id?: string; avatar_path?: string | null; banner_path?: string | null; badges?: string[]; bio?: string; display_name?: string; links?: Json; privacy?: Json; status_text?: string; theme?: string; updated_at?: string };
         Relationships: [{
           foreignKeyName: "account_profiles_account_id_fkey";
           columns: ["account_id"];
@@ -139,6 +249,10 @@ export type Database = {
     };
     Views: { [_ in never]: never };
     Functions: {
+      create_direct_conversation: { Args: { p_actor_session_hash: string; p_username: string }; Returns: string };
+      create_group_conversation: { Args: { p_actor_session_hash: string; p_name: string; p_usernames: string[] }; Returns: string };
+      send_social_message: { Args: { p_actor_session_hash: string; p_conversation_id: string; p_content: string; p_kind: MessageKind; p_reply_to_id?: string | null }; Returns: string };
+      get_social_conversation_stats: { Args: { p_actor_session_hash: string }; Returns: { conversation_id: string; latest_message_id: string | null; latest_content: string | null; latest_kind: MessageKind | null; latest_created_at: string | null; unread_count: number }[] };
       cleanup_expired_sessions: { Args: never; Returns: number };
       clear_rate_limit: { Args: { p_key_hash: string }; Returns: undefined };
       change_own_pin: { Args: { p_actor_session_hash: string; p_ip: string; p_pin_hash: string }; Returns: undefined };
@@ -212,7 +326,7 @@ export type Database = {
         Returns: undefined;
       };
     };
-    Enums: { account_type: AccountType };
+    Enums: { account_type: AccountType; conversation_kind: ConversationKind; conversation_role: ConversationRole; friendship_state: FriendshipState; invite_state: InviteState; message_kind: MessageKind; notification_kind: NotificationKind; presence_state: PresenceState; report_state: ReportState };
     CompositeTypes: { [_ in never]: never };
   };
 };

@@ -7,19 +7,23 @@ import {
   Activity,
   Bot,
   Braces,
+  Bell,
   ChevronRight,
   CircleUserRound,
   FileKey2,
   Gauge,
+  Globe2,
   KeyRound,
   LayoutDashboard,
   LogOut,
+  MessageCircle,
   Menu,
   Network,
   Search,
   Settings,
   ShieldCheck,
   Users,
+  UserRoundSearch,
   Wrench,
   X,
   Zap,
@@ -29,7 +33,8 @@ import { apiRequest } from "@/lib/client/api";
 import { toolCategories, tools } from "@/lib/tools/catalog";
 import { ThemeToggle } from "./theme-toggle";
 
-type View = "dashboard" | "ai" | ToolCategory | "api-keys" | "settings" | "logs" | "admin" | "owner";
+type SocialView = "chats" | "world" | "friends" | "people" | "notifications";
+type View = "dashboard" | "ai" | ToolCategory | "api-keys" | "settings" | "logs" | "admin" | "owner" | SocialView;
 
 const categoryIcon = {
   developer: Braces,
@@ -46,6 +51,14 @@ const navBase = [
   { id: "security", label: "Security", icon: ShieldCheck },
   { id: "utilities", label: "Utilities", icon: Wrench },
   { id: "api-keys", label: "API Keys", icon: KeyRound },
+] as const;
+
+const navSocial = [
+  { id: "chats", label: "Chats", icon: MessageCircle },
+  { id: "world", label: "World Chat", icon: Globe2 },
+  { id: "friends", label: "Friends", icon: Users },
+  { id: "people", label: "People", icon: UserRoundSearch },
+  { id: "notifications", label: "Notifications", icon: Bell },
 ] as const;
 
 const navSystem = [
@@ -67,6 +80,7 @@ const ApiKeysView = dynamic(() => import("./views/api-keys-view").then((module) 
 const LogsView = dynamic(() => import("./views/logs-view").then((module) => module.LogsView), { loading: LoadingView });
 const AdminView = dynamic(() => import("./views/admin-view").then((module) => module.AdminView), { loading: LoadingView });
 const SettingsView = dynamic(() => import("./views/settings-view").then((module) => module.SettingsView), { loading: LoadingView });
+const SocialWorkspace = dynamic(() => import("../social/social-workspace").then((module) => module.SocialWorkspace), { loading: LoadingView });
 
 function displayRole(role: SessionAccount["accountType"]) {
   return role === "owner" ? "OWNER" : role.toUpperCase();
@@ -192,14 +206,14 @@ export function SynthApp({ account }: { account: SessionAccount }) {
     <aside id="primary-sidebar" className={`sidebar ${mobileOpen ? "mobile-open" : ""}`}>
       <div className="sidebar-brand"><Link className="brand" href="/" onClick={(event) => { event.preventDefault(); navigate("dashboard"); }}><span className="brand-mark" aria-hidden="true">S</span><span>SYNTHNET</span></Link><button className="mobile-close" aria-label="Close navigation" onClick={() => setMobileOpen(false)}><X size={18} /></button></div>
       <div className="network-card"><div><span className="network-pulse"><i /></span><p><strong>PRIVATE NETWORK</strong><small>NODE // {account.id.slice(0, 6).toUpperCase()}</small></p></div><small>SECURE</small></div>
-      <nav aria-label="Primary navigation"><span className="nav-label">WORKSPACE</span>{navBase.map((item) => { const Icon = item.icon; return <button key={item.id} aria-current={!selectedTool && view === item.id ? "page" : undefined} className={!selectedTool && view === item.id ? "active" : ""} onClick={() => navigate(item.id)}><Icon size={16} /><span>{item.label}</span></button>; })}<span className="nav-label nav-space">SYSTEM</span>{navSystem.map((item) => { const Icon = item.icon; return <button key={item.id} aria-current={view === item.id ? "page" : undefined} className={view === item.id ? "active" : ""} onClick={() => navigate(item.id)}><Icon size={16} /><span>{item.label}</span></button>; })}{canAdmin && <button className={view === "admin" ? "active" : ""} aria-current={view === "admin" ? "page" : undefined} onClick={() => navigate("admin")}><Users size={16} /><span>Admin</span></button>}{isOwner && <button className={view === "owner" ? "active owner-nav" : "owner-nav"} aria-current={view === "owner" ? "page" : undefined} onClick={() => navigate("owner")}><ShieldCheck size={16} /><span>Owner</span><i>03</i></button>}</nav>
+      <nav aria-label="Primary navigation"><span className="nav-label">WORKSPACE</span>{navBase.map((item) => { const Icon = item.icon; return <button key={item.id} aria-current={!selectedTool && view === item.id ? "page" : undefined} className={!selectedTool && view === item.id ? "active" : ""} onClick={() => navigate(item.id)}><Icon size={16} /><span>{item.label}</span></button>; })}<span className="nav-label nav-space">SOCIAL</span>{navSocial.map((item) => { const Icon = item.icon; return <button key={item.id} aria-current={view === item.id ? "page" : undefined} className={view === item.id ? "active" : ""} onClick={() => navigate(item.id)}><Icon size={16} /><span>{item.label}</span></button>; })}<span className="nav-label nav-space">SYSTEM</span>{navSystem.map((item) => { const Icon = item.icon; return <button key={item.id} aria-current={view === item.id ? "page" : undefined} className={view === item.id ? "active" : ""} onClick={() => navigate(item.id)}><Icon size={16} /><span>{item.label}</span></button>; })}{canAdmin && <button className={view === "admin" ? "active" : ""} aria-current={view === "admin" ? "page" : undefined} onClick={() => navigate("admin")}><Users size={16} /><span>Admin</span></button>}{isOwner && <button className={view === "owner" ? "active owner-nav" : "owner-nav"} aria-current={view === "owner" ? "page" : undefined} onClick={() => navigate("owner")}><ShieldCheck size={16} /><span>Owner</span><i>03</i></button>}</nav>
       <div className="sidebar-account"><div className="avatar">{account.username.slice(0, 2).toUpperCase()}</div><p><strong>{account.username}</strong><small>{displayRole(account.accountType)}</small></p><button onClick={() => void logout()} aria-label="Log out"><LogOut size={16} /></button></div>
     </aside>
     {mobileOpen && <button className="sidebar-backdrop" aria-label="Close navigation" onClick={() => setMobileOpen(false)} />}
     <div className="app-main">
       <header className="topbar"><button className="menu-button" aria-label="Open navigation" aria-controls="primary-sidebar" aria-expanded={mobileOpen} onClick={() => setMobileOpen(true)}><Menu size={19} /></button><div className="breadcrumb"><span>SYNTHNET</span><i>/</i><strong>{selectedTool?.name ?? (view === "ai" ? "AI SANDBOX" : view.replace("-", " ").toUpperCase())}</strong></div><div className="topbar-actions"><button className="search-button" onClick={() => setSearchOpen(true)}><Search size={15} /><span>Search tools…</span><kbd>⌘ K</kbd></button><ThemeToggle /><span className="role-badge">{displayRole(account.accountType)}</span><button className="user-button" onClick={() => navigate("settings")}><CircleUserRound size={18} /><span>{account.username}</span></button></div></header>
-      <main className="app-content">
-        {selectedTool ? <ToolWorkbench tool={selectedTool} onBack={() => setSelectedTool(null)} /> : view === "dashboard" ? <DashboardView account={account} openView={navigate} openTool={openTool} /> : view === "ai" ? <AISandbox /> : ["developer", "network", "security", "utilities"].includes(view) ? <CatalogView category={view as ToolCategory} onOpen={openTool} /> : view === "api-keys" ? <ApiKeysView /> : view === "logs" ? <LogsView /> : view === "admin" && canAdmin ? <AdminView currentAccountId={account.id} /> : view === "owner" && isOwner ? <AdminView owner currentAccountId={account.id} /> : <SettingsView account={account} />}
+      <main className={`app-content ${navSocial.some((item) => item.id === view) ? "social-content" : ""}`}>
+        {selectedTool ? <ToolWorkbench tool={selectedTool} onBack={() => setSelectedTool(null)} /> : view === "dashboard" ? <DashboardView account={account} openView={navigate} openTool={openTool} /> : view === "ai" ? <AISandbox /> : ["developer", "network", "security", "utilities"].includes(view) ? <CatalogView category={view as ToolCategory} onOpen={openTool} /> : navSocial.some((item) => item.id === view) ? <SocialWorkspace mode={view as SocialView} account={account} onNavigate={(next) => navigate(next)} /> : view === "api-keys" ? <ApiKeysView /> : view === "logs" ? <LogsView /> : view === "admin" && canAdmin ? <AdminView currentAccountId={account.id} /> : view === "owner" && isOwner ? <AdminView owner currentAccountId={account.id} /> : <SettingsView account={account} />}
       </main>
       <footer className="app-footer"><span>© 2026 SYNTHNET</span><span><i /> AUTHENTICATED</span><span>BUILD 1.0.0</span></footer>
     </div>
